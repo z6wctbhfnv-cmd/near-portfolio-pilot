@@ -22,3 +22,5 @@ data/
 *.sqlite
 *.sqlite-*
 .DS_Store
+results/
+contracts/*/target/
