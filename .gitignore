@@ -1,0 +1,24 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.near-credentials/
+
+# build
+target/
+node_modules/
+dist/
+*.wasm
+
+# python
+__pycache__/
+.venv/
+*.pyc
+
+# data and local
+data/
+*.sqlite
+*.sqlite-*
+.DS_Store
