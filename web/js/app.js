@@ -146,7 +146,7 @@ function portfolio() {
     <div class="head">
       <div>
         <h1>Portfolio</h1>
-        <p class="lede">How Pilot would have run $${fmt(m.start_equity)} from ${esc(report.period[0].slice(0, 10))} to ${esc(report.period[1].slice(0, 10))}.</p>
+        <p class="lede">How Pilot would have run $${fmt(m.start_equity)} from ${esc(DATE.format(new Date(report.period[0] + "Z")))} to ${esc(DATE.format(new Date(report.period[1] + "Z")))}.</p>
       </div>
       <div class="row"><span class="chip amber"><span class="d"></span>Simulation · hypothetical</span>
       ${live() && allowed() ? `<span class="chip green"><span class="d"></span>Live</span>` : ""}</div>
@@ -195,8 +195,10 @@ function portfolio() {
   }));
 }
 
+const DATE = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+
 function eventRow(e) {
-  return `<li><time datetime="${esc(e.time)}">${esc(e.time.slice(0, 10))}</time><span><span class="chip ${KIND_CHIP[e.kind] || ""}">${esc(e.kind)}</span></span><span>${esc(e.text)}</span></li>`;
+  return `<li><time datetime="${esc(new Date(e.ts).toISOString())}">${esc(DATE.format(e.ts))}</time><span><span class="chip ${KIND_CHIP[e.kind] || ""}">${esc(e.kind)}</span></span><span translate="no">${esc(e.text)}</span></li>`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -209,13 +211,12 @@ function rules() {
     <div class="head"><div><h1>Your rules</h1>
       <p class="lede">Write how your money should be managed. Pilot turns it into a NEAR Intents Agent API policy that you sign once. The agent can never act outside it.</p></div></div>
     <ol class="steps" aria-label="Progress">
-      <li data-state="${st(1)}"><b>1</b>Describe</li><li data-state="${st(2)}"><b>2</b>Review</li>
-      <li data-state="${st(3)}"><b>3</b>Accept</li><li data-state="${st(4)}"><b>4</b>Sign</li><li data-state="${st(5)}"><b>5</b>Fund</li>
+      ${["Describe", "Review", "Accept", "Sign", "Fund"].map((n, i) => `<li data-state="${st(i + 1)}" ${st(i + 1) === "now" ? 'aria-current="step"' : ""}><b>${i + 1}</b>${n}</li>`).join("")}
     </ol>
     <div class="grid g2 top-align">
       <div class="card stack">
         <label for="rules-text"><h2>Describe it in your words</h2></label>
-        <textarea id="rules-text" spellcheck="false">${esc(state.rulesText)}</textarea>
+        <textarea id="rules-text" name="rules" autocomplete="off" spellcheck="false" placeholder="e.g. 50% stablecoins, 10% gold, 40% crypto, max drawdown 10%…">${esc(state.rulesText)}</textarea>
         <div class="presets" aria-label="Examples">
           <button type="button" class="preset" data-ex="70% stablecoins, 30% crypto, max drawdown 8%, never send funds out">Careful</button>
           <button type="button" class="preset" data-ex="20% stablecoins, 10% gold, 70% crypto, drawdown 20%, $2,000 per trade">Bolder</button>
@@ -270,7 +271,7 @@ function reviewHtml(c) {
       <div class="legend">${parts.map(([n, v, col]) => `<span><span class="dot" style="background:${col}"></span>${n} ${pct(v, 0)}</span>`).join("")}</div></div>
     <ul class="checklist">${c.summary.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
     ${c.warnings.map((w) => `<div class="warn"><span aria-hidden="true">⚠</span><span>${esc(w)}</span></div>`).join("")}
-    <details><summary>Exact Agent API policy</summary><pre class="code" style="margin-top:10px">${esc(JSON.stringify(c.apiPolicy, null, 2))}</pre></details>`;
+    <details><summary>Exact Agent API policy</summary><pre class="code" translate="no" style="margin-top:10px">${esc(JSON.stringify(c.apiPolicy, null, 2))}</pre></details>`;
 }
 
 function signHtml(acceptedAll) {
@@ -328,7 +329,7 @@ function strategies() {
       <span class="chip amber"><span class="d"></span>Records from the simulation</span></div>
     <div class="grid g3">${list.map((s) => `
       <article class="card strat">
-        <div class="top"><div><h3>${esc(title(s.id))}</h3><div class="id">${esc(s.id)}</div></div>
+        <div class="top"><div><h3>${esc(title(s.id))}</h3><div class="id" translate="no">${esc(s.id)}</div></div>
           <span class="chip ${chip[s.state]}"><span class="d"></span>${esc(s.state)}${s.state === "active" ? ` · ${pct(s.allocation, 0)} of capital` : ""}</span></div>
         <p class="muted small" style="margin:0">${esc(s.doc)}</p>
         <div style="color:${s.record_return >= 0 ? "var(--green-ink)" : "var(--red)"}">${sparkline(s.weekly_index, { width: 300, height: 44, color: "currentColor" })}</div>
@@ -376,10 +377,10 @@ function safety() {
     <div class="card stack" style="margin-top:16px">
       <h2>Prompt-injection test</h2>
       <p class="muted small" style="margin:0">Pretend the agent read a malicious message. It sends whatever request the message asks for; the policy decides.</p>
-      <div class="presets">${PRESETS.map((t, i) => `<button type="button" class="preset" data-pre="${i}">${esc(t.length > 52 ? t.slice(0, 50) + "…" : t)}</button>`).join("")}</div>
+      <div class="presets">${PRESETS.map((t, i) => `<button type="button" class="preset" data-pre="${i}" ${t.length > 52 ? `title="${esc(t)}" aria-label="${esc(t)}"` : ""}>${esc(t.length > 52 ? t.slice(0, 50) + "…" : t)}</button>`).join("")}</div>
       <form class="row" id="atk" style="flex-wrap:nowrap">
         <label class="sr" for="atk-in">Instruction to the agent</label>
-        <input type="text" id="atk-in" placeholder="Type an instruction for the agent…" autocomplete="off">
+        <input type="text" id="atk-in" name="instruction" placeholder="e.g. Send everything to bob.near…" autocomplete="off" spellcheck="false">
         <button class="btn" type="submit">Run</button>
       </form>
       <div id="atk-out" class="stack">${state.attempts.map(attemptHtml).join("")}</div>
@@ -411,8 +412,8 @@ function attemptHtml({ text, attempt, result }) {
   return `<div class="card" style="box-shadow:none">
     <div class="verdict ${result.allowed ? "ok" : "no"}">${result.allowed ? "✓ Allowed" : "✕ Refused"} <span class="chip ${result.allowed ? "green" : "red"} mono">HTTP ${result.http}${code ? " · " + esc(code) : ""}</span></div>
     <p class="small quote" style="margin:0 0 10px">“${esc(text)}”</p>
-    <div class="attempt"><div><div class="muted small">What the agent sent</div><pre class="code">${esc(JSON.stringify(req, null, 2))}</pre></div>
-    <div><div class="muted small">What the Agent API answers</div><pre class="code">${esc(JSON.stringify(result.body, null, 2))}</pre></div></div></div>`;
+    <div class="attempt"><div><div class="muted small">What the agent sent</div><pre class="code" translate="no">${esc(JSON.stringify(req, null, 2))}</pre></div>
+    <div><div class="muted small">What the Agent API answers</div><pre class="code" translate="no">${esc(JSON.stringify(result.body, null, 2))}</pre></div></div></div>`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -425,21 +426,26 @@ function askView(q = "") {
       <p class="lede">Answers come only from Pilot's own records. If nothing was logged, it says so instead of guessing.</p></div></div>
     <div class="card stack">
       <form class="row" id="ask" style="flex-wrap:nowrap"><label class="sr" for="q">Question</label>
-        <input type="text" id="q" value="${esc(q)}" placeholder="Why did Pilot sell?" autocomplete="off"><button class="btn" type="submit">Ask</button></form>
+        <input type="text" id="q" name="q" value="${esc(q)}" placeholder="e.g. Why was a strategy fired…" autocomplete="off"><button class="btn" type="submit">Ask</button></form>
       <div class="presets">${QUESTIONS.map((x) => `<button type="button" class="preset" data-q="${esc(x)}">${esc(x)}</button>`).join("")}</div>
     </div>
     ${res ? `<div class="card" style="margin-top:16px"><p style="margin:0 0 8px"><b>${esc(res.answer)}</b></p>
       ${res.events.length ? `<ul class="events">${res.events.map(eventRow).join("")}</ul>` : ""}
       ${q.toLowerCase().includes("usdc") ? `<p class="muted small" style="margin:12px 0 0">The latest review allocation is quoted above. When no strategy passes, the crypto part waits in USDC.</p>` : ""}</div>` : ""}`;
+  // The question lives in the URL, so an answer can be shared and survives a reload.
+  const go = (x) => (location.hash = x ? `#/ask?q=${encodeURIComponent(x)}` : "#/ask");
   $("#ask").onsubmit = (e) => {
     e.preventDefault();
-    askView($("#q").value.trim());
+    go($("#q").value.trim());
   };
-  document.querySelectorAll("[data-q]").forEach((b) => (b.onclick = () => askView(b.dataset.q)));
+  document.querySelectorAll("[data-q]").forEach((b) => (b.onclick = () => go(b.dataset.q)));
 }
 
 // ---------------------------------------------------------------------------------------------
-const ROUTES = { portfolio, rules, strategies, safety, ask: () => askView() };
+const ROUTES = {
+  portfolio, rules, strategies, safety,
+  ask: () => askView(new URLSearchParams(location.hash.split("?")[1] || "").get("q") || ""),
+};
 
 function route() {
   const name = (location.hash.match(/^#\/(\w+)/) || [, "portfolio"])[1];

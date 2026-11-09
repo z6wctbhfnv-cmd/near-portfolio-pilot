@@ -7,7 +7,8 @@ const el = (tag, attrs = {}) => {
 };
 
 const money = (v) => "$" + Math.round(v).toLocaleString("en-US");
-const day = (ts) => new Date(ts).toISOString().slice(0, 10);
+const DAY = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+const day = (ts) => DAY.format(ts);
 
 /**
  * lineChart(container, { ts: [...], series: [{ key, label, values, color, width, dash }] })
@@ -58,7 +59,11 @@ export function lineChart(container, { ts, series, format = money }) {
     const move = (ev) => {
       const r = svg.getBoundingClientRect();
       const px = ((ev.touches?.[0]?.clientX ?? ev.clientX) - r.left) * (W / r.width);
-      const i = Math.max(0, Math.min(ts.length - 1, Math.round(((px - pad.l) / (W - pad.l - pad.r)) * (ts.length - 1))));
+      showAt(Math.max(0, Math.min(ts.length - 1, Math.round(((px - pad.l) / (W - pad.l - pad.r)) * (ts.length - 1)))));
+    };
+    const showAt = (i) => {
+      const r = svg.getBoundingClientRect();
+      cursor = i;
       cross.setAttribute("x1", x(i));
       cross.setAttribute("x2", x(i));
       cross.setAttribute("visibility", "visible");
@@ -82,7 +87,19 @@ export function lineChart(container, { ts, series, format = money }) {
     hit.addEventListener("pointerleave", leave);
     svg.append(hit);
     container.append(svg, tip);
+    // Keyboard: the chart is one focus stop; arrows move the readout, Home/End jump to the ends.
+    container.tabIndex = 0;
+    container.setAttribute("aria-label", "Portfolio value chart. Use the arrow keys to read values by date.");
+    container.onkeydown = (ev) => {
+      const step = ev.shiftKey ? 30 : 7;
+      const keys = { ArrowLeft: -step, ArrowRight: step, Home: -Infinity, End: Infinity };
+      if (!(ev.key in keys)) return;
+      ev.preventDefault();
+      showAt(Math.max(0, Math.min(ts.length - 1, (cursor ?? ts.length - 1) + keys[ev.key])));
+    };
+    container.onblur = leave;
   };
+  let cursor = null;
   draw();
   const ro = new ResizeObserver(() => {
     if (Math.abs(container.clientWidth - (container.firstChild?.getAttribute?.("width") || 0)) > 4) draw();

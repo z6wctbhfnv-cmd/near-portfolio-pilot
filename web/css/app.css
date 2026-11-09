@@ -4,7 +4,7 @@
   --canvas: #f7f7f7;
   --ink: #131313;
   --ink-2: #3d3d3d;
-  --muted: #737373;
+  --muted: #666666; /* 5.4:1 on the #f7f7f7 canvas (WCAG AA for small text) */
   --line: rgba(0, 0, 0, 0.09);
   --line-2: rgba(0, 0, 0, 0.14);
   --card: #ffffff;
@@ -14,13 +14,13 @@
   --rail-hover: #2f2f2f;
   --rail-active: #383838;
   --green: #00c08b;
-  --green-ink: #00805c;
+  --green-ink: #006b4d; /* text on --green-soft: 5.8:1 */
   --green-soft: rgba(0, 192, 139, 0.12);
-  --amber: #b26b00;
+  --amber: #8a5300; /* text on --amber-soft: 5.8:1 */
   --amber-soft: #fff4e0;
-  --red: #d13b30;
+  --red: #b3261e; /* text on --red-soft: 5.7:1 */
   --red-soft: #fdecea;
-  --blue: #3d5af1;
+  --blue: #2c45c4;
   --violet: #8b5cf6;
   --radius: 16px;
   --radius-sm: 10px;
@@ -31,6 +31,9 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+html { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+h1, h2, h3 { text-wrap: balance; }
+p, li { text-wrap: pretty; }
 body {
   font-family: Figtree, ui-sans-serif, system-ui, -apple-system, sans-serif;
   font-size: 15px;
@@ -139,6 +142,7 @@ h3 { font-size: 15px; font-weight: 600; margin: 0; }
 .chip.amber { background: var(--amber-soft); color: var(--amber); }
 .chip.red { background: var(--red-soft); color: var(--red); }
 .chip.blue { background: rgba(61, 90, 241, 0.1); color: var(--blue); }
+.chip.toggle:hover { border-color: var(--line-2); }
 .chip .d { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .chip.toggle { cursor: pointer; border: 1px solid transparent; }
 .chip.toggle[aria-pressed="false"] { background: transparent; border-color: var(--line-2); color: var(--muted); }
@@ -154,6 +158,7 @@ label.check input { width: 18px; height: 18px; margin-top: 2px; accent-color: va
 /* ---------- chart ---------- */
 .chart { position: relative; width: 100%; }
 .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart:focus-visible { outline: 2px solid var(--green); outline-offset: 4px; border-radius: 8px; }
 .chart .grid { stroke: var(--line); stroke-width: 1; }
 .chart .axis { fill: var(--muted); font-size: 11.5px; font-family: Figtree, sans-serif; }
 .chart .cross { stroke: var(--line-2); stroke-dasharray: 3 3; }
@@ -247,7 +252,7 @@ details[open] > summary::before { transform: rotate(90deg); }
 
 /* ---------- dialog & toast ---------- */
 dialog {
-  border: 0; border-radius: 18px; padding: 0; width: min(640px, calc(100vw - 32px)); max-height: min(80vh, 760px);
+  border: 0; border-radius: 18px; padding: 0; width: min(640px, calc(100vw - 32px)); max-height: min(80vh, 760px); overscroll-behavior: contain;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.2); color: var(--ink);
 }
 dialog[open] { animation: pop 220ms var(--ease); }
@@ -279,7 +284,9 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
   .brand-text small { display: none; }
   .nav { flex-direction: row; gap: 2px; }
   .nav a { padding: 8px 10px; }
-  .nav a span { display: none; }
+  /* icon-only on phones, but the text stays for screen readers */
+  .nav a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  html { scroll-padding-top: 72px; } /* the sticky top bar must not cover the focused element */
   .owner { margin: 0 0 0 auto; flex-direction: row; }
   .owner .hint, .owner .who { display: none; }
   .side .btn { width: auto; height: 34px; padding: 0 12px; font-size: 13px; }
