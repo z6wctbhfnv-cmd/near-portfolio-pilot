@@ -56,6 +56,27 @@ def main() -> int:
         "event_counts": pd.Series([e.kind for e in res.events]).value_counts().to_dict(),
     }
 
+    sup = res.supervisor
+    report["final_targets"] = {k: round(v, 4) for k, v in res.final_targets.items()}
+    report["strategies"] = []
+    for s in catalog():
+        rec = res.records[s.id]
+        weekly = (1 + rec).cumprod().iloc[::7]
+        last8 = rec.iloc[-56:]
+        report["strategies"].append({
+            "id": s.id,
+            "kind": type(s).__name__,
+            "doc": (type(s).__doc__ or "").strip(),
+            "state": sup.state[s.id],
+            "allocation": round(sup.alloc.get(s.id, 0.0), 4),
+            "record_return": round(float((1 + rec).prod() - 1), 4),
+            "record_max_drawdown": round(float((1 - (1 + rec).cumprod() / (1 + rec).cumprod().cummax()).max()), 4),
+            "sharpe_8w": round(float(last8.mean() / last8.std() * (365 ** 0.5)), 2) if last8.std() > 0 else 0.0,
+            "weekly_index": [round(float(x), 4) for x in weekly],
+            "hires": sum(1 for e in res.events if e.text.startswith(f"hired {s.id}")),
+            "fires": sum(1 for e in res.events if e.text.startswith(f"fired {s.id}")),
+        })
+
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))

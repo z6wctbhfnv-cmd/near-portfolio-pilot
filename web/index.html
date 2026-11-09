@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pilot — your rules, enforced on NEAR</title>
+  <meta name="description" content="Describe how your money should be managed, sign once, and strategy scripts run it through NEAR Intents inside a policy the AI cannot break.">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2300c08b'/%3E%3Cpath d='M9 22V10h7a5 5 0 0 1 0 10h-3' stroke='%23fff' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="shell">
+    <aside class="side" aria-label="Main navigation">
+      <a class="brand" href="#/portfolio" aria-label="Pilot home">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="8" fill="var(--green)"/><path d="M9 22V10h7a5 5 0 0 1 0 10h-3" stroke="#0d0d0d" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="brand-text"><b>Pilot</b><small>built on NEAR</small></span>
+      </a>
+      <nav class="nav">
+        <a href="#/portfolio" data-route="portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m6 10V5m6 14v-7m4 7H3"/></svg><span>Portfolio</span></a>
+        <a href="#/rules" data-route="rules"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10l3 3v13H4V4h3m2 8h6m-6 4h6m-6-8h3"/></svg><span>Rules</span></a>
+        <a href="#/strategies" data-route="strategies"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4zm0 5l8 4 8-4M4 17l8 4 8-4"/></svg><span>Strategies</span></a>
+        <a href="#/safety" data-route="safety"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6l8-3z"/></svg><span>Safety</span></a>
+        <a href="#/ask" data-route="ask"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4V5zm5 5h6"/></svg><span>Ask</span></a>
+      </nav>
+      <div class="owner" id="owner"></div>
+    </aside>
+    <main id="main" tabindex="-1">
+      <div id="view" aria-live="polite"></div>
+      <footer class="foot">
+        <span>Prototype for the NEAR Hackathon. Simulated results are hypothetical. Not investment advice.</span>
+        <button class="link" type="button" data-open="disclaimer">Disclaimer</button>
+      </footer>
+    </main>
+  </div>
+  <dialog id="dlg" aria-labelledby="dlg-title"></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -144,6 +144,8 @@ class SimResult:
     events: list[Event]
     metrics: dict
     records: dict[str, pd.Series]
+    supervisor: "Supervisor | None" = None
+    final_targets: dict[str, float] = field(default_factory=dict)
 
 
 def daily_closes(prices: pd.DataFrame) -> pd.DataFrame:
@@ -212,6 +214,7 @@ def run(prices: pd.DataFrame, strategies: list[Strategy], mandate: Mandate | Non
         events.append(Event(ts, "trade", f"rebalanced, max drift {drift:.1%}", {"targets": {k: round(x, 4) for k, x in targets.items()}}))
 
     day_ts = set(int(x) for x in daily.index)
+    last_targets: dict[str, float] = {}
     for ts, row in prices.iterrows():
         ts = int(ts)
         px = row.to_dict()
@@ -237,11 +240,12 @@ def run(prices: pd.DataFrame, strategies: list[Strategy], mandate: Mandate | Non
             targets = {a: mandate.crypto_weight * sleeve.get(a, 0.0) for a in CRYPTO}
             targets["XAUT"] = mandate.gold_weight
             targets["USDC"] = mandate.stable_weight + mandate.crypto_weight * sleeve.get("USDC", 0.0)
+            last_targets = targets
             rebalance(ts, px, targets)
         eq_out.append((ts, sum(value(px).values())))
 
     equity = pd.Series(dict(eq_out), name="equity")
-    return SimResult(equity, events, metrics(equity, fees, stats, start_equity), records)
+    return SimResult(equity, events, metrics(equity, fees, stats, start_equity), records, sup, last_targets)
 
 
 def metrics(equity: pd.Series, fees: float, stats: dict, start: float) -> dict:

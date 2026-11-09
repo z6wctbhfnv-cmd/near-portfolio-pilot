@@ -21,6 +21,18 @@ python3 -m pytest -q                   # policy, engine and Agent API client tes
 
 Requires Python 3.11+ with `pandas`, `numpy` and `pytest`. What the simulation found, including where it fails: [docs/SIM_FINDINGS.md](docs/SIM_FINDINGS.md).
 
+## Web app
+
+A static site (no build step, no npm): `web/`. It works in simulation mode on any static host; live actions turn on when `web/js/config.js` points to the Pilot backend.
+
+```bash
+python3 sim/run_sim.py && python3 sim/export_web.py   # refresh web/data/*.json
+python3 -m http.server 8765 --directory web           # open http://localhost:8765
+node --test tests/web/logic.test.mjs                  # browser logic matches the Python core
+```
+
+Screens: Portfolio (simulated value vs benchmarks), Rules (plain words -> Agent API policy -> terms -> sign), Strategies (strategy NFTs and their records), Safety (freeze, prompt-injection test), Ask (answers quoted from the decision log). Sign-in with a passkey (WebAuthn) or a NEAR wallet (Meteor, MyNearWallet, Intear).
+
 Read-only check against the live Agent API (it never moves funds):
 
 ```bash
