@@ -59,3 +59,16 @@ def test_swap_defaults_to_dry_run(monkeypatch):
     AgentApi(api_key="k").swap("a" * 64, "ngt_x", ASSET_IDS["USDC"], ASSET_IDS["ETH"], "1000000")
     assert seen["body"]["dry"] is True and seen["body"]["confidential"] is True
     assert seen["kw"]["grant"] == "ngt_x" and seen["kw"]["idempotency_key"].startswith("swap-")
+
+
+def test_app_fee_is_sent_only_when_configured(monkeypatch):
+    from pilot import agent_api
+    sent = {}
+    c = agent_api.AgentApi.__new__(agent_api.AgentApi)
+    monkeypatch.setattr(c, "_req", lambda m, path, body=None, **kw: sent.setdefault("body", body) or {})
+    monkeypatch.delenv("PILOT_FEE_RECIPIENT", raising=False)
+    c.swap("a", "g", "x", "y", "1")
+    assert "app_fees" not in sent["body"]
+    sent.clear()
+    c.swap("a", "g", "x", "y", "1", app_fee_bps=30, fee_recipient="pilot.near")
+    assert sent["body"]["app_fees"] == [{"recipient": "pilot.near", "fee": 30}]
