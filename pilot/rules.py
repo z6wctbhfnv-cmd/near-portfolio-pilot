@@ -111,7 +111,8 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
         per_tx = round(max(100.0, min(daily, portfolio_usd * 0.1)), 2)
 
     mandate = Mandate(stable_weight=round(w["stable"], 4), gold_weight=round(w["gold"], 4),
-                      crypto_weight=round(1 - round(w["stable"], 4) - round(w["gold"], 4), 4), max_drawdown=dd)
+                      crypto_weight=round(1 - round(w["stable"], 4) - round(w["gold"], 4), 4), max_drawdown=dd,
+                      drawdown_mode="from_peak" if re.search(r"all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска)", t) else "episode")
     policy = Policy(actions=tuple(actions), per_transaction_usd=per_tx, daily_usd=daily,
                     destinations=frozenset(destinations))
     api_policy = policy.to_agent_api(ASSET_IDS)

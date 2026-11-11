@@ -42,3 +42,9 @@ def test_russian_rules():
     c = compile_rules("60% в стейблах, 10% золото, 30% крипта, просадка не больше 12%, никуда не выводить")
     assert (c.mandate["stable_weight"], c.mandate["gold_weight"]) == (0.6, 0.1)
     assert c.mandate["max_drawdown"] == 0.12
+
+
+def test_drawdown_mode_from_words():
+    from pilot.rules import compile_rules
+    assert compile_rules("50% usdc, 50% crypto, never lose more than 10% from the all-time peak").mandate["drawdown_mode"] == "from_peak"
+    assert compile_rules("70% stablecoins, 30% crypto, max drawdown 8%, never send funds out").mandate["drawdown_mode"] == "episode"

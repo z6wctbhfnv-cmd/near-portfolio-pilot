@@ -304,3 +304,34 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Agent screen */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-weight: 500; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.tbl td { padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tbl input[type="checkbox"], label input[type="checkbox"] { accent-color: var(--green); width: 16px; height: 16px; }
+textarea.code { font-family: var(--mono); font-size: 12.5px; line-height: 1.55; background: #0f0f0f; color: #e6e6e6; border-color: #0f0f0f; }
+input[type="range"] { accent-color: var(--ink); margin-top: 6px; }
+input[type="range"]:disabled { opacity: 0.4; }
+.card svg { max-width: 100%; height: auto; }
+[hidden] { display: none !important; }
+
+/* Settings, laid out like Claude and ChatGPT: section list on the left, rows on the right */
+.settings { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; margin-top: 8px; }
+.settings-nav { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 16px; align-self: start; }
+.settings-nav button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 9px 12px; border-radius: 10px; border: 0; background: transparent; cursor: pointer; color: var(--ink-2); font-size: 14px; }
+.settings-nav button:hover { background: rgba(0, 0, 0, 0.04); }
+.settings-nav button[aria-current="page"] { background: rgba(0, 0, 0, 0.07); color: var(--ink); font-weight: 500; }
+.settings-nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.settings-body h2 { margin: 0 0 4px; font-size: 18px; }
+.srow { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.srow-t { font-size: 14px; }
+.srow-d { font-size: 13px; color: var(--muted); margin-top: 2px; max-width: 460px; }
+.srow-c { flex: none; display: flex; align-items: center; gap: 8px; }
+.srow-c input[type="range"] { width: 180px; }
+@media (max-width: 760px) {
+  .settings { grid-template-columns: 1fr; }
+  .settings-nav { flex-direction: row; overflow-x: auto; position: static; }
+  .settings-nav button { white-space: nowrap; }
+  .srow { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
