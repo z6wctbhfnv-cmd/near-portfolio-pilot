@@ -41,7 +41,7 @@ export type TokenInfo = {
 
 /** Parses a decimal string or number into an exact atomic bigint, rounding down. */
 export function toAtomic(amount: string | number, decimals: number): bigint {
-  let s = typeof amount === "number" ? amount.toFixed(Math.min(decimals, 18)) : amount.trim();
+  let s = typeof amount === "number" ? amount.toFixed(Math.min(decimals + 2, 20)) : amount.trim();
   if (!/^\d+(\.\d+)?$/.test(s)) throw new Error(`not a non-negative decimal: ${amount}`);
   const [whole, frac = ""] = s.split(".") as [string, string?];
   const f = (frac ?? "").slice(0, decimals).padEnd(decimals, "0");
@@ -64,8 +64,8 @@ export function fromAtomic(raw: bigint | string, decimals: number): string {
 export function usdToAtomic(usd: number, price: number, decimals: number): bigint {
   if (!(usd > 0) || !(price > 0)) return 0n;
   const units = usd / price;
-  // Keep 12 significant decimals of precision before going exact.
-  return toAtomic(units.toFixed(Math.min(decimals, 12)), decimals);
+  // Two guard digits past the last atomic unit, then truncate: never rounds up into more than `usd`.
+  return toAtomic(units.toFixed(Math.min(decimals + 2, 20)), decimals);
 }
 
 export function atomicToNumber(raw: bigint | string, decimals: number): number {

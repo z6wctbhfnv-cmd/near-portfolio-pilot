@@ -215,7 +215,16 @@ export async function parseMandate(text: string, ai?: NearAiClient) {
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: text.slice(0, 4000) },
     ]);
-    const parsed = MandateSchema.safeParse(answer);
+    // The AI overrides only the fields it actually stated; everything else comes from the rules.
+    const known = Object.keys(MandateSchema.shape);
+    const stated =
+      answer && typeof answer === "object" && !Array.isArray(answer)
+        ? Object.fromEntries(Object.entries(answer as Record<string, unknown>).filter(([k, v]) => known.includes(k) && v !== undefined))
+        : {};
+    if (!Object.keys(stated).length) {
+      return { ...rules, source: "rules" as const, notes: [...rules.notes, "AI answer rejected: no mandate fields"] };
+    }
+    const parsed = MandateSchema.safeParse({ ...rules.mandate, ...stated });
     if (!parsed.success) {
       return { ...rules, source: "rules" as const, notes: [...rules.notes, `AI answer rejected: ${parsed.error.issues[0]?.message ?? "invalid"}`] };
     }
