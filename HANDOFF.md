@@ -8,7 +8,7 @@ Branch `backend`. What works, what was checked and how, and what still needs the
 |---|---|
 | Strategy logic (Rust) | `cargo test` in `strategies/`: 10 tests |
 | WASM build and the same output in two runtimes | `npm run build:wasm`; a test compares our in-process WASI shim with `node:wasi`, byte for byte |
-| Backend | `npm test`: 31 tests against fakes of the Agent API, OutLayer, NEAR AI and Binance |
+| Backend | `npm test`: 32 tests against fakes of the Agent API, OutLayer, NEAR AI and Binance |
 | Public endpoints | `npm run smoke`: Agent API `/health`, `/v1/network`, `/v1/tokens` (all 7 universe assets are listed and priced), NEAR AI model list, WASM |
 | Server on real data | Started locally on public prices. Rules parsed from Russian text, a paper pilot created, run (3 paper fills), valued, reviewed; a backtest over HTTP |
 | NFT contract | `cargo test` in `contracts/strategy-nft/`: 29 tests. `cargo near build non-reproducible-wasm` produces a 333 KB wasm |

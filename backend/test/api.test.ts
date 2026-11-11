@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { applyIntentResult, syncOwnerIntents } from "../src/app.js";
+import { applyIntentResult, startScheduler, syncOwnerIntents } from "../src/app.js";
 import { buildServer } from "../src/server.js";
 import { DEFAULT_UNIVERSE } from "../src/tokens.js";
 import { testApp, wasmBuilt } from "./fakes.js";
@@ -156,6 +156,21 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     expect(run2.engine).toBe("local");
     expect(run2.status).toBe("ok");
     expect(run2.error).toMatch(/OutLayer failed/);
+  });
+
+  it("the scheduler runs due pilots and due reviews, and skips paused ones", async () => {
+    const { call, app } = setup();
+    const a = (await call("POST", "/v1/pilots", { name: "A", strategy: { id: "rebalance", params: { weights: { NEAR: 0.5 } } } })).body.pilot.id;
+    const b = (await call("POST", "/v1/pilots", { name: "B", strategy: { id: "rebalance", params: { weights: { NEAR: 0.5 } } } })).body.pilot.id;
+    await call("PATCH", `/v1/pilots/${b}`, { paused: true });
+    app.pilots.update(a, { next_review_at: Date.now() - 1 });
+    const stop = startScheduler(app, 3_600_000);
+    for (let i = 0; i < 50 && app.reviewer.list(a).length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    stop();
+    expect((await call("GET", `/v1/pilots/${a}/runs`)).body.data).toHaveLength(1);
+    expect((await call("GET", `/v1/pilots/${b}/runs`)).body.data).toHaveLength(0);
+    expect(app.reviewer.list(a)).toHaveLength(1);
+    expect(app.pilots.get(a)!.next_run_at).toBeGreaterThan(Date.now() + 23 * 3_600_000);
   });
 
   it("pauses and resumes", async () => {

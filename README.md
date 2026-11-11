@@ -62,7 +62,7 @@ cd backend
 npm install
 npm run build:wasm              # builds strategies/ to WASM
 npm run fetch-history           # ~3 years of daily closes (Binance public data) into data/
-npm test                        # 31 tests, no network
+npm test                        # 32 tests, no network
 npm run smoke                   # read-only checks against the real services
 npm run backtest -- trend '{"weights":{"NEAR":0.2,"BTC":0.2,"ETH":0.2}}' 730
 npm start                       # API on http://127.0.0.1:8787
