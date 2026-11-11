@@ -1,6 +1,6 @@
 ---
 name: near-portfolio-pilot
-version: 0.1.0
+version: "0.1.0"
 description: Manage a NEAR Intents portfolio through the NEAR Portfolio Pilot backend — turn plain-language rules into a signed policy, run deterministic strategies, read results and the weekly review.
 activation:
   keywords:
@@ -18,17 +18,20 @@ activation:
     - near
   max_context_tokens: 2500
 credentials:
-  - name: PILOT_API_TOKEN
-    description: Bearer token of the user's NEAR Portfolio Pilot backend (only if the backend sets one).
-requires:
-  bins:
-    - curl
+  - name: pilot_api_token
+    provider: near-portfolio-pilot
+    location:
+      type: bearer
+    hosts:
+      - "127.0.0.1"
+      - "localhost"
+    setup_instructions: "Only needed if the backend sets PILOT_API_TOKEN: store the same value here. For a remote backend, add its host to `hosts`."
 ---
 
 # NEAR Portfolio Pilot
 
 You help the user manage their crypto portfolio through their own **NEAR Portfolio Pilot** backend.
-The backend runs on `$PILOT_URL` (default `http://127.0.0.1:8787`). Send `Authorization: Bearer $PILOT_API_TOKEN` when the token is set. All bodies are JSON.
+Call the backend with the HTTP tool at `http://127.0.0.1:8787` (or the URL the user gives you). The bearer token, if the backend uses one, is injected automatically for the hosts listed in this skill. All bodies are JSON.
 
 ## What you can and cannot do
 

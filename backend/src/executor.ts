@@ -76,7 +76,20 @@ export type ExecutorDeps = {
   settleWaitMs?: number;
 };
 
-export type LiveLimits = { maxTradeUsd: number | null; remainingBudgetUsd: number | null };
+export type TradeLimits = { maxTradeUsd: number | null; remainingBudgetUsd: number | null; minTradeUsd: number };
+
+/**
+ * Shrinks a trade to the mandate's per-trade cap and what is left of today's budget. A rebalance
+ * bigger than the caps then converges over several runs instead of being refused every time.
+ */
+export function clampTrade(usd: number, maxTradeUsd: number | null, budgetLeft: number, minTradeUsd: number) {
+  const capped = Math.min(usd, maxTradeUsd ?? Infinity, budgetLeft);
+  if (capped + 1e-9 < Math.max(minTradeUsd, 0.01)) {
+    const code = budgetLeft < usd && budgetLeft <= (maxTradeUsd ?? Infinity) ? "mandate_budget" : "mandate_trade_limit";
+    return { ok: false as const, code, error: `only ${Math.max(0, capped).toFixed(2)} USD fits the mandate's caps (minimum trade ${minTradeUsd} USD)` };
+  }
+  return { ok: true as const, usd: Number(capped.toFixed(2)), clamped: capped < usd - 1e-9 };
+}
 
 export class Executor {
   constructor(private readonly d: ExecutorDeps) {}
@@ -126,11 +139,14 @@ export class Executor {
   // ------------------------------------------------------------------ paper
 
   /** Fills trades against paper holdings at catalogue prices minus the paper cost. */
-  async paper(pilotId: string, runId: string, holdings: Record<string, number>, trades: Trade[]) {
+  async paper(pilotId: string, runId: string, holdings: Record<string, number>, trades: Trade[], limits: TradeLimits) {
     const prices = await this.prices();
     const cost = this.d.paperCostBps / 10_000;
     const results: ExecutionRow[] = [];
-    for (const t of trades) {
+    let budgetLeft = limits.remainingBudgetUsd ?? Infinity;
+    for (const t0 of trades) {
+      const fit = clampTrade(t0.usd, limits.maxTradeUsd, budgetLeft, limits.minTradeUsd);
+      const t = { ...t0, usd: fit.ok ? fit.usd : t0.usd };
       const ps = prices[t.sell];
       const pb = prices[t.buy];
       const id = randomUUID();
@@ -147,7 +163,9 @@ export class Executor {
         quote_json: null,
         correlation_id: null,
       };
-      if (!ps || !pb) {
+      if (!fit.ok) {
+        this.insert({ ...base, status: "blocked", response_json: null, error_code: fit.code, error: fit.error });
+      } else if (!ps || !pb) {
         this.insert({ ...base, status: "blocked", response_json: null, error_code: "price_unavailable", error: `no price for ${!ps ? t.sell : t.buy}` });
       } else {
         const sellUnits = Math.min(holdings[t.sell] ?? 0, t.usd / ps);
@@ -156,13 +174,14 @@ export class Executor {
           this.insert({ ...base, status: "blocked", response_json: null, error_code: "insufficient_balance", error: `no ${t.sell} to sell` });
         } else {
           const got = (usd * (1 - cost)) / pb;
+          budgetLeft -= usd;
           holdings[t.sell] = (holdings[t.sell] ?? 0) - sellUnits;
           holdings[t.buy] = (holdings[t.buy] ?? 0) + got;
           this.insert({
             ...base,
             usd: Number(usd.toFixed(2)),
             status: "paper_filled",
-            response_json: json({ sold_units: sellUnits, bought_units: got, sell_price: ps, buy_price: pb, cost_bps: this.d.paperCostBps }),
+            response_json: json({ sold_units: sellUnits, bought_units: got, sell_price: ps, buy_price: pb, cost_bps: this.d.paperCostBps, planned_usd: t0.usd }),
             error_code: null,
             error: null,
           });
@@ -184,7 +203,7 @@ export class Executor {
    * Prepares, checks and (only with LIVE_EXECUTION=true) sends each trade as a swap.
    * `limits` are the mandate's own caps, checked before the API's.
    */
-  async live(pilotId: string, runId: string, agentId: string, trades: Trade[], limits: LiveLimits) {
+  async live(pilotId: string, runId: string, agentId: string, trades: Trade[], limits: TradeLimits) {
     const results: ExecutionRow[] = [];
     const ready = await this.d.gateway.readiness(agentId);
     const grant = this.d.gateway.grantClient(pilotId);
@@ -201,8 +220,10 @@ export class Executor {
       remaining !== null && remaining !== undefined ? Number(remaining) : Infinity,
     );
 
-    for (const t of trades) {
+    for (const t0 of trades) {
       const id = randomUUID();
+      const fit = clampTrade(t0.usd, limits.maxTradeUsd, budgetLeft, limits.minTradeUsd);
+      const t = { ...t0, usd: fit.ok ? fit.usd : t0.usd };
       const sellU = DEFAULT_UNIVERSE.find((a) => a.symbol === t.sell);
       const buyU = DEFAULT_UNIVERSE.find((a) => a.symbol === t.buy);
       const base = {
@@ -231,12 +252,8 @@ export class Executor {
         block("unknown_asset", `${t.sell} or ${t.buy} is not in the universe`);
         continue;
       }
-      if (limits.maxTradeUsd !== null && t.usd > limits.maxTradeUsd + 1e-9) {
-        block("mandate_trade_limit", `${t.usd} USD is above the mandate's ${limits.maxTradeUsd} USD per trade`);
-        continue;
-      }
-      if (t.usd > budgetLeft + 1e-9) {
-        block("mandate_budget", `${t.usd} USD is above the ${budgetLeft.toFixed(2)} USD left in today's budget`);
+      if (!fit.ok) {
+        block(fit.code, fit.error);
         continue;
       }
       const token = await this.d.catalog.get(sellU.asset_id);

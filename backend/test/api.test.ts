@@ -87,6 +87,7 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
       name: "Paper test",
       mode: "paper",
       strategy: { id: "rebalance", params: { weights: { NEAR: 0.5, BTC: 0.25 } } },
+      mandate: { max_trade_usd: 1000, budget: { daily_usd: 5000 } },
       initial_usd: 1000,
     });
     expect(created.status).toBe(201);
@@ -117,6 +118,27 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     expect(review.source).toBe("rules");
     expect(review.metrics.trades_filled).toBe(2);
     expect(app.pilots.get(id)!.next_review_at).toBeGreaterThan(Date.now());
+  });
+
+  it("shrinks trades to the mandate caps and stops at the daily budget", async () => {
+    const { call } = setup();
+    const id = (
+      await call("POST", "/v1/pilots", {
+        name: "Capped",
+        strategy: { id: "rebalance", params: { weights: { NEAR: 0.5, BTC: 0.25 } } },
+        mandate: { max_trade_usd: 60, budget: { daily_usd: 100 } },
+        initial_usd: 1000,
+      })
+    ).body.pilot.id;
+    const run = (await call("POST", `/v1/pilots/${id}/run`)).body;
+    expect(run.output.trades.map((t: { usd: number }) => t.usd)).toEqual([250, 500]);
+    expect(run.executions.map((e: { status: string; usd: number }) => [e.status, e.usd])).toEqual([
+      ["paper_filled", 60],
+      ["paper_filled", 40],
+    ]);
+    // Same day: the 100 USD budget is used up, nothing more is filled.
+    const run2 = (await call("POST", `/v1/pilots/${id}/run`)).body;
+    expect(run2.executions.every((e: { status: string; error_code: string }) => e.status === "blocked" && e.error_code === "mandate_budget")).toBe(true);
   });
 
   it("runs trend with cached history and applies an AI review within bounds", async () => {
@@ -284,6 +306,18 @@ describe.skipIf(!wasmBuilt)("live pilot on the Agent API (fake)", () => {
     expect(agent.swaps).toHaveLength(2);
   });
 
+  it("never double-buys: a DCA swap waiting for owner approval counts as done", async () => {
+    const { call, agent, id } = await livePilot({ LIVE_EXECUTION: "true" });
+    expect((await call("PUT", `/v1/pilots/${id}/strategy`, { id: "dca", params: { buy: { NEAR: 1 }, amount_usd: 20, every_days: 7 } })).status).toBe(200);
+    agent.nextOpStatus = "PENDING_APPROVAL";
+    const first = (await call("POST", `/v1/pilots/${id}/run`)).body;
+    expect(first.executions[0].status).toBe("PENDING_APPROVAL");
+    const second = (await call("POST", `/v1/pilots/${id}/run`)).body;
+    expect(second.output.trades).toHaveLength(0);
+    expect(second.output.notes).toContain("not due yet");
+    expect(agent.swaps).toHaveLength(1);
+  });
+
   it("keeps polling UNCERTAIN without resubmitting", async () => {
     const { call, agent, app, id } = await livePilot({ LIVE_EXECUTION: "true" });
     agent.nextOpStatus = "UNCERTAIN";
@@ -302,9 +336,12 @@ describe.skipIf(!wasmBuilt)("live pilot on the Agent API (fake)", () => {
     expect(e.error_code).toBe("spend_budget_exceeded");
 
     agent.quoteWarnings = [];
-    agent.balances = { USDC: String(1000 * 1e6) }; // 1000 → buy 500 of NEAR > 60 USD mandate cap
+    agent.balances = { USDC: String(1000 * 1e6) }; // 1000 → wants 500 of NEAR; the mandate allows 60 per trade
     e = (await call("POST", `/v1/pilots/${id}/run`)).body.executions[0];
-    expect(e.error_code).toBe("mandate_trade_limit");
+    expect(e.status).toBe("PROCESSING");
+    expect(e.usd).toBe(60);
+    expect(agent.swaps.at(-1)!.body.amount).toBe(String(60 * 1e6)); // 60 USDC, not 500
+    agent.swaps.length = 0;
 
     agent.balances = { USDC: String(100 * 1e6) };
     agent.policy.synced = false;
@@ -312,7 +349,6 @@ describe.skipIf(!wasmBuilt)("live pilot on the Agent API (fake)", () => {
     expect(e.error_code).toBe("not_ready");
     expect(e.error).toMatch(/synced/);
     expect(agent.swaps).toHaveLength(0);
-    expect(app.pilots.get(id)!.strategy.state).toEqual({});
   });
 
   it("refusals that sent nothing are final for that key", async () => {

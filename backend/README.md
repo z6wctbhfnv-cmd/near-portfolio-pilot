@@ -69,4 +69,4 @@ Set `SCHEDULER_ENABLED=false` to turn it off.
 
 ## Tests
 
-`npm test` runs 32 tests against in-process fakes of the Agent API, OutLayer, NEAR AI and Binance. Nothing goes over the network. `npm run smoke` makes read-only calls to the real services.
+`npm test` runs 34 tests against in-process fakes of the Agent API, OutLayer, NEAR AI and Binance. Nothing goes over the network. `npm run smoke` makes read-only calls to the real services.

@@ -163,21 +163,20 @@ export class Runner {
     // Act.
     let executions: ExecutionRow[] = [];
     if (output.trades.length) {
+      const limits = this.limits(p);
       if (p.mode === "paper") {
         const h = { ...holdings };
-        executions = await this.d.executor.paper(pilotId, runId, h, output.trades);
+        executions = await this.d.executor.paper(pilotId, runId, h, output.trades, limits);
         this.d.pilots.update(pilotId, { paper_holdings_json: json(h) });
       } else {
-        const m = p.mandate;
-        executions = await this.d.executor.live(pilotId, runId, p.agent_id!, output.trades, {
-          maxTradeUsd: m?.max_trade_usd ?? null,
-          remainingBudgetUsd: null,
-        });
+        executions = await this.d.executor.live(pilotId, runId, p.agent_id!, output.trades, limits);
       }
     }
 
-    // Persist strategy state only when the trades it assumed actually went through (or there were none).
-    const acted = !output.trades.length || executions.some((e) => e.status === "paper_filled" || e.status === "SUCCESS" || e.status === "QUEUED" || e.status === "PROCESSING");
+    // Persist strategy state unless every trade was refused before anything was sent. A swap that is
+    // pending approval, uncertain or awaiting a same-key replay counts as acted: otherwise the next
+    // run would plan the same buy again under a new key (a double buy).
+    const acted = !output.trades.length || executions.some((e) => e.status !== "blocked" && e.status !== "refused");
     const everyHours = Number(params.every_hours ?? 24);
     this.d.pilots.update(pilotId, {
       ...(acted ? { strategy_state_json: json(output.state ?? {})! } : {}),
@@ -233,6 +232,23 @@ export class Runner {
       equity_usd_e6: Math.round((run.total_usd ?? 0) * 1e6),
     });
     this.d.db.prepare("UPDATE runs SET nft_status = 'published', nft_tx = ? WHERE id = ?").run(tx, runId);
+  }
+
+  /**
+   * The mandate's caps for this run. Paper pilots count their own fills of the last 24 h against the
+   * daily budget; live pilots take the remaining budget from the Agent API's policy usage instead.
+   */
+  limits(p: Pilot) {
+    const m = p.mandate;
+    const minTradeUsd = Number(p.strategy.params.min_trade_usd ?? 5);
+    let remainingBudgetUsd: number | null = null;
+    if (p.mode === "paper" && m?.budget.daily_usd) {
+      const spent = this.d.db
+        .prepare("SELECT COALESCE(SUM(usd), 0) AS s FROM executions WHERE pilot_id = ? AND status = 'paper_filled' AND created_at > ?")
+        .get(p.id, Date.now() - 86_400_000) as { s: number };
+      remainingBudgetUsd = Math.max(0, m.budget.daily_usd - spent.s);
+    }
+    return { maxTradeUsd: m?.max_trade_usd ?? null, remainingBudgetUsd, minTradeUsd };
   }
 
   getRun(id: string) {

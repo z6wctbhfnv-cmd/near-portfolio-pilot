@@ -15,7 +15,7 @@ Read [DISCLAIMER.md](DISCLAIMER.md) before using this with real funds.
 
 - [x] Strategy scripts and simulation on historical data (`strategies/`, `backend/src/backtest.ts`)
 - [x] Agent API integration: policy, owner intents, grants, swaps, dry quotes (`backend/src/agent.ts`, `executor.ts`). Tested against a fake API. Live calls need a partner key, see [HANDOFF.md](HANDOFF.md).
-- [x] OutLayer strategy runner (`backend/src/outlayer.ts`). Tested against a fake. The project is not deployed on OutLayer yet.
+- [x] OutLayer strategy runner (`backend/src/outlayer.ts`). Tested against a fake. The project is not deployed on OutLayer yet (it needs the built `.wasm` at a public HTTPS address, see HANDOFF).
 - [x] Strategy NFT contract, NEP-171 (`contracts/strategy-nft/`). Unit-tested; not deployed.
 - [x] IronClaw skill (`skill/near-portfolio-pilot/SKILL.md`) and weekly AI review (`backend/src/review.ts`)
 - [ ] Web UI and demo
@@ -62,7 +62,7 @@ cd backend
 npm install
 npm run build:wasm              # builds strategies/ to WASM
 npm run fetch-history           # ~3 years of daily closes (Binance public data) into data/
-npm test                        # 32 tests, no network
+npm test                        # 34 tests, no network
 npm run smoke                   # read-only checks against the real services
 npm run backtest -- trend '{"weights":{"NEAR":0.2,"BTC":0.2,"ETH":0.2}}' 730
 npm start                       # API on http://127.0.0.1:8787
