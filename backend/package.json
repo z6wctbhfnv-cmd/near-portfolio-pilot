@@ -1,0 +1,34 @@
+{
+  "name": "near-portfolio-pilot-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Backend for NEAR Portfolio Pilot: owner intents, strategy runs (local WASI or OutLayer TEE), paper and live execution on the NEAR Intents Agent API, weekly AI review.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build:wasm": "cd ../strategies && cargo build --release --target wasm32-wasip1",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "backtest": "tsx src/cli/backtest.ts",
+    "fetch-history": "tsx src/cli/fetch-history.ts",
+    "smoke": "tsx src/cli/smoke.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@fastify/cors": "^11.4.1",
+    "@near-intents-agent-api/sdk": "^0.8.2",
+    "fastify": "^5.12.8",
+    "near-api-js": "^7.5.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  }
+}
