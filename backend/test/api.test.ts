@@ -213,6 +213,14 @@ describe.skipIf(!wasmBuilt)("live pilot on the Agent API (fake)", () => {
     return { ...t, id };
   }
 
+  it("stores no pilot when the Agent API is not configured", async () => {
+    const { call } = setup({ NEAR_INTENTS_AGENT_API_KEY: "" });
+    const r = await call("POST", "/v1/pilots", { name: "x", mode: "live", owner: NEAR_OWNER, text: "NEAR", accepted_terms: true });
+    expect(r.status).toBe(503);
+    expect(r.body.error.code).toBe("not_configured");
+    expect((await call("GET", "/v1/pilots")).body.data).toHaveLength(0);
+  });
+
   it("refuses live creation without the owner's acceptance of the terms", async () => {
     const { call } = setup();
     const r = await call("POST", "/v1/pilots", { name: "x", mode: "live", owner: NEAR_OWNER, text: "NEAR" });

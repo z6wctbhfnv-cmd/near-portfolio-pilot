@@ -28,8 +28,9 @@ export type StrategyInfo = {
 
 const TGAS = 1_000_000_000_000n;
 /** Storage deposits; the contract refunds what it does not use. */
-const MINT_DEPOSIT = 50_000_000_000_000_000_000_000n; // 0.05 NEAR
-const RECORD_DEPOSIT = 10_000_000_000_000_000_000_000n; // 0.01 NEAR
+const MINT_DEPOSIT = 100_000_000_000_000_000_000_000n; // 0.1 NEAR (≈0.01 used + up to 0.041 for 4 KB params)
+const RECORD_DEPOSIT = 10_000_000_000_000_000_000_000n; // 0.01 NEAR (≈0.005 used)
+const VERSION_DEPOSIT = 10_000_000_000_000_000_000_000n; // 0.01 NEAR (≈0.0016 used)
 
 export class NftPublisher {
   private account: Account | null = null;
@@ -110,13 +111,14 @@ export class NftPublisher {
    * by the publisher account) or rolls its version forward when the WASM hash changed.
    */
   async prepareToken(tokenId: string, title: string, info: StrategyInfo): Promise<string | null> {
-    const existing = await this.view<{ info?: { wasm_sha256?: string } } | null>("get_strategy", { token_id: tokenId }).catch(() => null);
+    const existing = await this.view<{ strategy?: { wasm_sha256?: string } } | null>("get_strategy", { token_id: tokenId }).catch(() => null);
     if (!existing) return this.ensureToken(tokenId, this.opts.accountId!, title, info);
-    if (existing.info?.wasm_sha256 && existing.info.wasm_sha256 !== info.wasm_sha256) {
+    if (existing.strategy?.wasm_sha256 && existing.strategy.wasm_sha256 !== info.wasm_sha256) {
+      // The contract keeps old versions so earlier runs stay explainable; each label must be new.
       return this.call(
         "update_strategy_version",
         { token_id: tokenId, version: info.version, wasm_sha256: info.wasm_sha256, source_url: info.source_url },
-        0n,
+        VERSION_DEPOSIT,
       );
     }
     return null;

@@ -15,6 +15,8 @@ import { catalog, isStrategyId, parseStrategyParams, STRATEGY_IDS, type Strategy
 import { DEFAULT_UNIVERSE, universeBySymbol } from "./tokens.js";
 
 const DAY = 86_400_000;
+export const RISK_NOTICE =
+  "The Agent API is an experimental, mainnet-only beta. You and your users may lose all assets used with it, or lose access to them. It is operated by NEAR Technologies Limited. NEAR Portfolio Pilot is an unaudited hackathon prototype; read DISCLAIMER.md.";
 const PUBLIC = new Set(["/health", "/v1/config"]);
 
 class HttpError extends Error {
@@ -198,6 +200,7 @@ export function buildServer(app: App) {
     }
 
     // Live: compile the policy and prepare agent_create for the owner's wallet.
+    app.gateway.api(); // fails fast (503 not_configured) before anything is stored
     const tokens = await app.catalog.all();
     const { policy, warnings } = compilePolicy(mandate, tokens);
     const p = app.pilots.create({
@@ -212,11 +215,17 @@ export function buildServer(app: App) {
       review_every_days: app.cfg.REVIEW_EVERY_DAYS,
     });
     const evidence = { accepted_terms: true, at: new Date().toISOString(), ip: req.ip, user_agent: req.headers["user-agent"] ?? null };
-    const generated = await app.gateway.generate(
-      { type: "agent_create", name: b.name, external_user_id: p!.id, owner: b.owner as OwnerWallet, policy } as GenerateIntentRequest,
-      p!.id,
-      { policy, mandate, terms_evidence: evidence },
-    );
+    let generated;
+    try {
+      generated = await app.gateway.generate(
+        { type: "agent_create", name: b.name, external_user_id: p!.id, owner: b.owner as OwnerWallet, policy } as GenerateIntentRequest,
+        p!.id,
+        { policy, mandate, terms_evidence: evidence },
+      );
+    } catch (e) {
+      app.db.prepare("DELETE FROM pilots WHERE id = ?").run(p!.id); // nothing to sign: no half-created pilot
+      throw e;
+    }
     return reply.code(201).send({ pilot: p, owner_action: generated, warnings, notes });
   });
 
@@ -380,7 +389,9 @@ export function buildServer(app: App) {
   server.post("/v1/pilots/:id/deposit", async (req) => {
     const { agentId } = liveAgent((req.params as { id: string }).id);
     const b = body(z.object({ origin_asset: z.string().min(3), amount: z.string().regex(/^\d+$/).optional() }), req.body);
-    return app.gateway.api().deposit(agentId, { origin_asset: b.origin_asset, ...(b.amount ? { amount: b.amount } : {}), confidential: false });
+    const deposit = await app.gateway.api().deposit(agentId, { origin_asset: b.origin_asset, ...(b.amount ? { amount: b.amount } : {}), confidential: false });
+    // The Agent API asks partners to show the risk notice again before the owner funds the wallet.
+    return { ...deposit, risk_notice: RISK_NOTICE };
   });
 
   server.get("/v1/pilots/:id/balances", async (req) => {

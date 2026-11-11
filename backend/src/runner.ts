@@ -214,7 +214,8 @@ export class Runner {
     const out = run.output as { engine_version?: string } | null;
     await this.d.nft.prepareToken(tokenId, `${p.strategy.id} · ${p.name}`.slice(0, 120), {
       strategy_id: p.strategy.id,
-      version: out?.engine_version ?? "0.0.0",
+      // Engine version plus code hash: a rebuild with new code is a new version label on-chain.
+      version: `${out?.engine_version ?? "0.0.0"}+${run.wasm_sha256.slice(0, 12)}`,
       wasm_sha256: run.wasm_sha256,
       source_url: "https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot/tree/main/strategies",
       outlayer_project: this.d.outlayer.configured ? (this.d.outlayerProject ?? null) : null,
