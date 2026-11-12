@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+/* RoadRadio (headings + logo) is not on any font CDN. Drop the files into public/fonts/
+   as RoadRadio-Bold.woff2 / RoadRadio-Bold.otf and they are picked up. Until then Unbounded stands in. */
+@font-face {
+  font-family: "RoadRadio";
+  font-weight: 400 900;
+  font-display: swap;
+  src: local("RoadRadio"), local("Road Radio"), local("RoadRadio-Bold"), local("Road Radio Bold"),
+       url("/fonts/RoadRadio-Bold.woff2") format("woff2");
+}
+
+/* Layout: warm off-white page, one full-bleed orange hero, white rounded cards, soft 3D objects as the only illustrations. */
+@theme {
+  --color-bg: #fff7f0;
+  --color-card: #ffffff;
+  --color-card2: #fff0e4;
+  --color-line: #f3e1d2;
+  --color-ink: #1d130c;
+  --color-dim: #85725f;
+  --color-yel: #ff7a00;
+  --color-yel-deep: #f05f00;
+  --color-yel-ink: #ffffff;
+  --color-cream: #ffe3c7;
+  --color-up: #16a34a;
+  --color-down: #e5483b;
+  --font-display: "RoadRadio", var(--font-unbounded), "Arial Black", sans-serif;
+  --font-sans: var(--font-onest), ui-sans-serif, system-ui, sans-serif;
+}
+
+html { background: var(--color-bg); color-scheme: light; }
+body { background: var(--color-bg); color: var(--color-ink); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.02;
+  text-wrap: balance;
+}
+.num { font-variant-numeric: tabular-nums; }
+
+.card { background: var(--color-card); border-radius: 28px; box-shadow: 0 1px 0 rgba(29, 19, 12, .04), 0 12px 32px -18px rgba(150, 70, 0, .25); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  height: 58px; padding: 0 1.6rem; border-radius: 18px;
+  font-size: 17px; font-weight: 600;
+  transition: transform .25s cubic-bezier(.34, 1.56, .64, 1), box-shadow .2s, background .2s;
+}
+.btn:hover { transform: translateY(-2px); }
+.btn:active { transform: scale(.97); }
+.btn-yel { background: var(--color-yel); color: #fff; box-shadow: 0 10px 24px -10px rgba(255, 122, 0, .7); }
+.btn-yel:hover { background: var(--color-yel-deep); }
+.btn-gray { background: var(--color-card2); color: var(--color-ink); }
+.btn-white { background: #fff; color: var(--color-yel-deep); box-shadow: 0 10px 30px -12px rgba(120, 40, 0, .5); }
+.btn-ghost { background: rgba(255, 255, 255, .18); color: #fff; }
+.btn-ghost:hover { background: rgba(255, 255, 255, .28); }
+.btn:disabled { opacity: .4; pointer-events: none; }
+.btn .arrow { transition: transform .25s cubic-bezier(.34, 1.56, .64, 1); }
+.btn:hover .arrow { transform: translateX(4px); }
+
+.press { transition: transform .15s ease, background .15s ease; }
+.press:active { transform: scale(.97); }
+
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+@keyframes marquee { to { transform: translateX(-50%); } }
+.marquee { animation: marquee 45s linear infinite; }
+
+:focus-visible { outline: 2px solid var(--color-yel); outline-offset: 3px; border-radius: 12px; }
+::selection { background: var(--color-yel); color: #fff; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* NEAR wallet selector modal, in brand colours. Every variable is set so a dark OS theme can't leak in. */
+#near-wallet-selector-modal .nws-modal-wrapper,
+#near-wallet-selector-modal .nws-modal-wrapper.light-theme,
+#near-wallet-selector-modal .nws-modal-wrapper.dark-theme {
+  --backdrop-bg: rgba(29, 19, 12, .35);
+  --heading-color: #1d130c;
+  --text-color: #85725f;
+  --sidebar-border-color: #f3e1d2;
+  --content-bg: #ffffff;
+  --change-path-bg: #fff0e4;
+  --home-button-bg: #fff0e4;
+  --bottom-section: #ffffff;
+  --mobile-text: #1d130c;
+  --selected-wallet-bg: #ff7a00;
+  --selected-wallet-bg-hover: #f05f00;
+  --wallet-option-bg-hover: #ffe3c7;
+  --wallet-option-border-color: #f3e1d2;
+  --wallet-option-outline-color: #ff7a00;
+  --option-wallet-bg-color: #fff7f0;
+  --option-single-wallet-bg-color: #fff0e4;
+  --get-wallet-option-bg-color: #fff7f0;
+  --get-wallet-option-bg-color-hover: #ffe3c7;
+  --get-wallet-option-border-color: #f3e1d2;
+  --get-wallet-outline-color: #ff7a00;
+  --confirm-button-bg: #ff7a00;
+  --confirm-button-bg-hover: #f05f00;
+  --secondary-button-bg-color: #fff0e4;
+  --secondary-button-border-color: #fff0e4;
+  --secondary-button-text-color: #f05f00;
+  --close-button-bg-color: #fff0e4;
+  --close-button-fill-icon-color: #85725f;
+  --spinner-color: #ff7a00;
+  --what-wallet-icon-color: #ff7a00;
+  --connected-green: #16a34a;
+  --error: #e5483b;
+  font-family: var(--font-onest), sans-serif;
+}
+#near-wallet-selector-modal .nws-modal-wrapper .nws-modal { border-radius: 28px; }
+#near-wallet-selector-modal .nws-modal-wrapper .nws-modal-overlay { backdrop-filter: blur(6px); }
+#near-wallet-selector-modal .single-wallet .content .title,
+#near-wallet-selector-modal .single-wallet .content .name { color: #1d130c; font-weight: 600; }
+#near-wallet-selector-modal .single-wallet.sidebar.selected-wallet .content .title { color: #fff; }
