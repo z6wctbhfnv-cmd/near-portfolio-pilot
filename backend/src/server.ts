@@ -10,7 +10,10 @@ import { backtest } from "./backtest.js";
 import { describeConfig } from "./config.js";
 import { json, parse } from "./db.js";
 import { compilePolicy, type Mandate, MandateSchema, parseMandate, strategyForMandate } from "./mandate.js";
+import { copyGate } from "./copying.js";
+import { DEFAULT_HOLDER_FEE_BPS, PLATFORM_FEE_BPS, REFERRAL_FEE_BPS } from "./fees.js";
 import { scriptCodeHash } from "./nft.js";
+import { CASH, SwarmConfigSchema, valueOf } from "./swarm.js";
 import { catalog, isStrategyId, parseStrategyParams, STRATEGY_IDS, type StrategyId } from "./strategies.js";
 import { DEFAULT_UNIVERSE, universeBySymbol } from "./tokens.js";
 
@@ -199,7 +202,7 @@ export function buildServer(app: App) {
 
   async function compileFor(mandate: Mandate) {
     const tokens = await app.catalog.all().catch(() => []);
-    const { policy, warnings } = compilePolicy(mandate, tokens);
+    const { policy, warnings } = compilePolicy(mandate, tokens, app.policyOptions());
     let strategy: { id: StrategyId; params: Record<string, unknown> };
     try {
       strategy = strategyForMandate(mandate);
@@ -254,7 +257,7 @@ export function buildServer(app: App) {
     }
     app.gateway.api(); // fails fast (503 not_configured) before anything is stored
     const tokens = await app.catalog.all();
-    const { policy, warnings } = compilePolicy(mandate, tokens);
+    const { policy, warnings } = compilePolicy(mandate, tokens, app.policyOptions());
     const p = await app.pilots.create({
       name: b.name,
       mode: "live",
@@ -437,7 +440,7 @@ export function buildServer(app: App) {
     if (!mandate) throw new HttpError(400, "validation_failed", "give `text` or `mandate`");
     const current = await app.gateway.api().getPolicy(agentId);
     if (current.revision === null) throw new HttpError(409, "policy_not_ready", "the current policy has no revision yet");
-    const { policy, warnings } = compilePolicy(mandate, await app.catalog.all());
+    const { policy, warnings } = compilePolicy(mandate, await app.catalog.all(), app.policyOptions());
     const generated = await app.gateway.generate(
       { type: "policy_update", agent_id: agentId, policy, expected_revision: current.revision } as GenerateIntentRequest,
       pilot.id,
@@ -505,6 +508,112 @@ export function buildServer(app: App) {
     const tokenId = await app.nft.tokenByCodeHash(codeHash).catch(() => null);
     const onChain = tokenId ? await app.nft.history(tokenId).catch((e: Error) => ({ error: e.message })) : null;
     return { code_hash: codeHash, token_id: tokenId, contract: app.nft.contract, on_chain: onChain, local_runs: local };
+  });
+
+  // ------------------------------------------------------------ copy fees, bond, health, swarm, perps
+
+  server.get("/v1/pilots/:id/fees", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const rows = await app.fees.list(p.id);
+    return {
+      terms: {
+        holder_bps_default: DEFAULT_HOLDER_FEE_BPS,
+        platform_bps: PLATFORM_FEE_BPS,
+        referral_bps_of_platform: REFERRAL_FEE_BPS,
+        payments_enabled: app.cfg.FEE_PAYMENTS_ENABLED,
+        fee_asset_id: app.cfg.FEE_ASSET_ID,
+        destination: app.fees.destination(),
+        min_fee_usd: app.cfg.MIN_FEE_USD,
+      },
+      peaks: await app.fees.peaks(p.id),
+      data: rows.map((r) => ({ ...r, request: parse(r.request_json, null), quote: parse(r.quote_json, null), response: parse(r.response_json, null), request_json: undefined, quote_json: undefined, response_json: undefined })),
+    };
+  });
+
+  server.post("/v1/pilots/:id/fees/settle", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    return app.fees.settle(p.id);
+  });
+
+  server.post("/v1/fees/:id/refresh", async (req) => {
+    const r = await app.fees.refresh((req.params as { id: string }).id);
+    if (!r) throw new NotFound("fee payment not found");
+    return r;
+  });
+
+  // Whether the pilot's script(s) may be copied right now: the holder's bond against what is required.
+  server.get("/v1/pilots/:id/copy-gate", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const wasmSha = app.wasm.available() ? app.wasm.wasmSha256 : null;
+    const ids = p.swarm?.scripts.length ? [...new Set(p.swarm.scripts.map((s) => s.id))] : [p.strategy.id];
+    const gates = await Promise.all(ids.map(async (id) => ({ strategy: id, ...(await copyGate(app.db, app.nft, p.owner, id, wasmSha)) })));
+    return { bond_gate: app.cfg.BOND_GATE, data: gates };
+  });
+
+  server.get("/v1/pilots/:id/health", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    return { latest: await app.health.latest(p.id), data: await app.health.list(p.id) };
+  });
+
+  server.post("/v1/pilots/:id/health/check", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    return app.health.check(p.id, { force: true });
+  });
+
+  server.post("/v1/health/:id/answer", async (req) => {
+    const b = body(z.object({ answer: z.enum(["pause", "keep"]) }), req.body);
+    let r;
+    try {
+      r = await app.health.answer((req.params as { id: string }).id, b.answer);
+    } catch (e) {
+      throw new HttpError(409, "bad_state", (e as Error).message);
+    }
+    if (!r) throw new NotFound("health check not found");
+    return r;
+  });
+
+  server.get("/v1/pilots/:id/swarm", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    if (!p.swarm) return { swarm: null, state: null };
+    const u = await app.catalog.universe();
+    const px = Object.fromEntries(u.filter((a) => a.price).map((a) => [a.symbol, a.price!]));
+    const sleeves = Object.entries(p.swarm_state?.sleeves ?? {}).map(([key, s]) => ({ key, cash: key === CASH, share: p.swarm_state?.alloc[key] ?? null, value_usd: Number(valueOf(s.units, px).toFixed(2)), units: s.units }));
+    return { swarm: p.swarm, state: p.swarm_state ? { alloc: p.swarm_state.alloc, alloc_at: p.swarm_state.alloc_at, alloc_reason: p.swarm_state.alloc_reason, sleeves } : null };
+  });
+
+  // Follow several scripts at once: the main agent splits the capital and nets their trades.
+  server.put("/v1/pilots/:id/swarm", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const cfg = body(SwarmConfigSchema, req.body);
+    const stable = String(p.strategy.params.stable ?? "USDC");
+    try {
+      for (const s of cfg.scripts) s.params = parseStrategyParams(s.id, { stable, ...s.params });
+    } catch (e) {
+      throw new HttpError(400, "validation_failed", (e as Error).message);
+    }
+    if (p.mode === "live" && p.policy && (p.policy as { assets: string[] | "any" }).assets !== "any") {
+      const allowed = new Set((p.policy as { assets: string[] }).assets);
+      const outside = [...new Set(cfg.scripts.flatMap((s) => Object.keys((s.id === "dca" ? s.params.buy : s.params.weights) as Record<string, number>)))].filter((sym) => !allowed.has(universeBySymbol(sym)?.asset_id ?? ""));
+      if (outside.length) throw new HttpError(409, "outside_policy", `the signed policy does not allow ${outside.join(", ")}; update the policy first`);
+    }
+    return { pilot: await app.pilots.update(p.id, { swarm_json: json(cfg)! }) };
+  });
+
+  server.delete("/v1/pilots/:id/swarm", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    return { pilot: await app.pilots.update(p.id, { swarm_json: null, swarm_state_json: null }) };
+  });
+
+  server.get("/v1/pilots/:id/perps", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const rows = app.perps ? await app.perps.list(p.id) : [];
+    return { enabled: app.cfg.HL_PERPS_ENABLED, network: "hyperliquid-testnet", data: rows.map((r) => ({ ...r, request: parse(r.request_json, null), response: parse(r.response_json, null), request_json: undefined, response_json: undefined })) };
+  });
+
+  // Read-only: the Hyperliquid testnet account the perp executor trades for.
+  server.get("/v1/perps/account", async () => {
+    if (!app.hl.user) throw new HttpError(503, "not_configured", "HL_TESTNET_PRIVATE_KEY or HL_ACCOUNT_ADDRESS is not set");
+    return { network: "hyperliquid-testnet", user: app.hl.user, builder: app.hl.builder, ...(await app.hl.account()) };
   });
 
   return server;

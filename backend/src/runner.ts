@@ -5,13 +5,16 @@
 import { randomUUID } from "node:crypto";
 import type { AgentGateway } from "./agent.js";
 import type { StrategyOutput } from "./backtest.js";
+import { copyGate } from "./copying.js";
 import { type Db, json, logEvent } from "./db.js";
 import type { Executor, ExecutionRow } from "./executor.js";
 import type { PriceHistory } from "./history.js";
 import type { NftPublisher } from "./nft.js";
 import type { OutLayerClient } from "./outlayer.js";
+import { type PerpExecutor, perpTargets } from "./perps.js";
 import type { Pilot, Pilots } from "./pilots.js";
-import { STRATEGY_INFO, strategySymbols } from "./strategies.js";
+import { parseStrategyParams, STRATEGY_INFO, type StrategyId, strategySymbols } from "./strategies.js";
+import { allocate, attribute, initialState, plan, rebalanceSleeves, trueUp, valueOf } from "./swarm.js";
 import { DEFAULT_UNIVERSE, type TokenCatalog } from "./tokens.js";
 import { sha256Hex, type StrategyWasm } from "./wasm.js";
 
@@ -27,7 +30,13 @@ export type RunnerDeps = {
   nft: NftPublisher;
   engine: "local" | "outlayer" | "auto";
   outlayerProject?: string;
+  /** Who is stopped when a copied script's holder bond is short: see config BOND_GATE. */
+  bondGate?: "live" | "all" | "off";
+  /** Hyperliquid testnet perps; null when HL_PERPS_ENABLED is off. */
+  perps?: PerpExecutor | null;
 };
+
+type StrategyInput = { strategy: StrategyId; params: Record<string, unknown>; now_ms: number; state: unknown; portfolio: Array<{ symbol: string; units: number; price: number }>; history: Record<string, number[]> };
 
 /** One strategy NFT per pilot listing: the strategy id plus the pilot's short id. */
 
@@ -112,50 +121,21 @@ export class Runner {
     const stop = await this.drawdownCheck(p, portfolio);
     if (stop.triggered) return this.emergencyExit(p, runId, holdings, portfolio, stop, reason);
 
-    // History: closed days from the cache, plus the live price as the latest point.
-    const lookback = STRATEGY_INFO[p.strategy.id].history_days(params);
-    const history: Record<string, number[]> = {};
-    if (lookback > 0) {
-      const risk = symbols.filter((s) => !DEFAULT_UNIVERSE.find((a) => a.symbol === s)?.stable);
-      await this.d.history.ensure(risk, Date.now() - (lookback + 5) * 86_400_000);
-      for (const s of risk) {
-        const closes = await this.d.history.lastCloses(s, lookback - 1);
-        const live = portfolio.find((x) => x.symbol === s)?.price;
-        history[s] = live ? [...closes, live] : closes;
-      }
-    }
+    if (p.swarm?.scripts.length) return this.runSwarm(p, runId, started, reason, holdings);
 
-    const state = p.strategy.state && typeof p.strategy.state === "object" ? p.strategy.state : {};
-    const input = { strategy: p.strategy.id, params, now_ms: started, state, portfolio, history };
-    const inputJson = JSON.stringify(input);
-
-    // Decide: OutLayer TEE when configured, else the same module locally.
-    let engine: "local" | "outlayer" = "local";
-    let output: StrategyOutput;
-    let attestation: unknown = null;
-    const useOutLayer = this.d.engine === "outlayer" || (this.d.engine === "auto" && this.d.outlayer.configured);
+    // A copied script runs only while its holder's bond covers the copiers (see copying.ts).
     const notes: string[] = [];
-    if (useOutLayer) {
-      try {
-        const call = await this.d.outlayer.run(input);
-        output = call.output as unknown as StrategyOutput;
-        engine = "outlayer";
-        attestation = { call_id: call.call_id, attestation_url: call.attestation_url, time_ms: call.time_ms, compute_cost: call.compute_cost };
-        if (call.call_id) {
-          try {
-            attestation = { ...(attestation as object), record: await this.d.outlayer.attestation(call.call_id) };
-          } catch (e) {
-            notes.push(`attestation record not readable yet: ${(e as Error).message}`);
-          }
-        }
-      } catch (e) {
-        if (this.d.engine === "outlayer") throw e;
-        notes.push(`OutLayer failed, ran locally: ${(e as Error).message}`);
-        output = this.d.wasm.run<StrategyOutput>(inputJson).output;
-      }
-    } else {
-      output = this.d.wasm.run<StrategyOutput>(inputJson).output;
+    const gate = await this.copyCheck(p, p.strategy.id);
+    if (!gate.open) {
+      if (this.blocksOnBond(p)) return this.skipRun(p, runId, gate.reason, { bond: gate });
+      notes.push(`${gate.reason} (a live pilot would not trade)`);
     }
+
+    const history = await this.historyFor(p.strategy.id, params, symbols, portfolio);
+    const state = p.strategy.state && typeof p.strategy.state === "object" ? p.strategy.state : {};
+    const input: StrategyInput = { strategy: p.strategy.id, params, now_ms: started, state, portfolio, history };
+    const inputJson = JSON.stringify(input);
+    const { output, engine, attestation } = await this.decide(input, notes);
     const outputJson = JSON.stringify(output);
     const wasmSha = this.d.wasm.available() ? this.d.wasm.wasmSha256 : null;
     await this.d.db
@@ -186,6 +166,7 @@ export class Runner {
       ...(acted ? { strategy_state_json: json(output.state ?? {})! } : {}),
       next_run_at: Date.now() + everyHours * 3_600_000,
     });
+    await this.runPerps(p, runId, output.target_weights, notes);
 
     const after = await this.holdings((await this.d.pilots.get(pilotId))!);
     const val = await this.valuation(after.holdings);
@@ -210,6 +191,204 @@ export class Runner {
     const run = (await this.getRun(runId))!;
     const status = this.d.nft.configured && run.wasm_sha256 ? "queued" : "unpublished";
     await this.d.db.prepare("UPDATE runs SET nft_status = ? WHERE id = ?").run(status, runId);
+  }
+
+  /** Closed daily closes plus the live price as the latest point, for the script's lookback. */
+  private async historyFor(id: StrategyId, params: Record<string, unknown>, symbols: string[], portfolio: Array<{ symbol: string; price: number }>) {
+    const lookback = STRATEGY_INFO[id].history_days(params);
+    const history: Record<string, number[]> = {};
+    if (lookback > 0) {
+      const risk = symbols.filter((s) => !DEFAULT_UNIVERSE.find((a) => a.symbol === s)?.stable);
+      await this.d.history.ensure(risk, Date.now() - (lookback + 5) * 86_400_000);
+      for (const s of risk) {
+        const closes = await this.d.history.lastCloses(s, lookback - 1);
+        const live = portfolio.find((x) => x.symbol === s)?.price;
+        history[s] = live ? [...closes, live] : closes;
+      }
+    }
+    return history;
+  }
+
+  /** Decide: OutLayer TEE when configured, else the same module locally. */
+  private async decide(input: StrategyInput, notes: string[]): Promise<{ output: StrategyOutput; engine: "local" | "outlayer"; attestation: unknown }> {
+    const useOutLayer = this.d.engine === "outlayer" || (this.d.engine === "auto" && this.d.outlayer.configured);
+    if (useOutLayer) {
+      try {
+        const call = await this.d.outlayer.run(input);
+        let attestation: unknown = { call_id: call.call_id, attestation_url: call.attestation_url, time_ms: call.time_ms, compute_cost: call.compute_cost };
+        if (call.call_id) {
+          try {
+            attestation = { ...(attestation as object), record: await this.d.outlayer.attestation(call.call_id) };
+          } catch (e) {
+            notes.push(`attestation record not readable yet: ${(e as Error).message}`);
+          }
+        }
+        return { output: call.output as unknown as StrategyOutput, engine: "outlayer", attestation };
+      } catch (e) {
+        if (this.d.engine === "outlayer") throw e;
+        notes.push(`OutLayer failed, ran locally: ${(e as Error).message}`);
+      }
+    }
+    return { output: this.d.wasm.run<StrategyOutput>(JSON.stringify(input)).output, engine: "local", attestation: null };
+  }
+
+  private copyCheck(p: Pilot, strategyId: string) {
+    return copyGate(this.d.db, this.d.nft, p.owner, strategyId, this.d.wasm.available() ? this.d.wasm.wasmSha256 : null);
+  }
+
+  private blocksOnBond(p: Pilot) {
+    const mode = this.d.bondGate ?? "live";
+    return mode === "all" || (mode === "live" && p.mode === "live");
+  }
+
+  /** Ends a run without deciding or trading, and tries again at the next interval. */
+  private async skipRun(p: Pilot, runId: string, why: string, output: Record<string, unknown>) {
+    const everyHours = Number(p.strategy.params.every_hours ?? 24);
+    await this.d.db.prepare("UPDATE runs SET status = 'skipped', error = ?, output_json = ?, finished_at = ? WHERE id = ?").run(why, json({ ok: false, skipped: why, ...output }), Date.now(), runId);
+    await this.d.pilots.update(p.id, { next_run_at: Date.now() + everyHours * 3_600_000 });
+    await logEvent(this.d.db, p.id, "warn", `run skipped: ${why}`, { run_id: runId });
+    return await this.getRun(runId);
+  }
+
+  /** Perp weights in the decision go to Hyperliquid testnet, when perps are on. */
+  private async runPerps(p: Pilot, runId: string, weights: Record<string, number> | undefined, notes: string[]) {
+    const targets = perpTargets(weights);
+    if (!Object.keys(targets).length) return;
+    if (!this.d.perps) {
+      notes.push(`perp weights ${Object.entries(targets).map(([c, w]) => `${c} ${w}`).join(", ")} ignored: HL_PERPS_ENABLED is off`);
+      return;
+    }
+    try {
+      const rows = await this.d.perps.rebalance(p.id, runId, targets, p.mandate?.max_trade_usd ?? null);
+      notes.push(`perps (Hyperliquid testnet): ${rows.map((r) => `${r.coin} ${r.status}`).join(", ") || "nothing to change"}`);
+    } catch (e) {
+      notes.push(`perps failed: ${(e as Error).message}`);
+      await logEvent(this.d.db, p.id, "warn", `perps failed: ${(e as Error).message}`, { run_id: runId });
+    }
+  }
+
+  /**
+   * A swarm run (see swarm.ts): each followed script decides on its own sleeve, the main agent nets
+   * the trades, sends only the net, and books the fills back to the sleeves.
+   */
+  private async runSwarm(p: Pilot, runId: string, started: number, reason: string, holdings: Holdings) {
+    const cfg = p.swarm!;
+    const universe = await this.d.catalog.universe();
+    const px: Record<string, number> = Object.fromEntries(universe.filter((a) => a.price).map((a) => [a.symbol, a.price!]));
+    const notes: string[] = [];
+    const DAY = 86_400_000;
+
+    // Books: the wallet is the truth; the allocation is reviewed every `review_every_days`.
+    let st = p.swarm_state;
+    const keys = cfg.scripts.map((s) => s.key);
+    const changed = !st || keys.some((k) => !(k in st!.alloc) && !(k in st!.sleeves)) || Object.keys(st.alloc).some((k) => !keys.includes(k));
+    if (!st) {
+      st = initialState(cfg, holdings, px, started);
+      notes.push(`allocation: ${st.alloc_reason}`);
+    } else {
+      let sleeves = trueUp(st.sleeves, holdings);
+      if (changed || started - st.alloc_at >= cfg.review_every_days * DAY) {
+        const a = allocate(cfg);
+        sleeves = rebalanceSleeves(sleeves, a.alloc, px);
+        st = { sleeves, alloc: a.alloc, alloc_at: started, alloc_reason: a.reason };
+        notes.push(`allocation reviewed: ${a.reason}`);
+      } else {
+        st = { ...st, sleeves };
+      }
+    }
+
+    // Each script agent decides on its own sleeve, with the same WASM a single pilot runs.
+    const wants: Array<{ key: string; trades: Array<{ sell: string; buy: string; usd: number }> }> = [];
+    const agents: Array<Record<string, unknown>> = [];
+    const nextState: Record<string, unknown> = {};
+    const inputs: Record<string, StrategyInput> = {};
+    let engineUsed: "local" | "outlayer" = "local";
+    for (const s of cfg.scripts) {
+      const sleeve = st.sleeves[s.key] ?? { units: {}, state: null };
+      const value = valueOf(sleeve.units, px);
+      const gate = await this.copyCheck(p, s.id);
+      if (!gate.open && this.blocksOnBond(p)) {
+        agents.push({ key: s.key, strategy: s.id, value_usd: value, skipped: gate.reason });
+        continue;
+      }
+      if (!gate.open) notes.push(`${s.key}: ${gate.reason} (a live pilot would not trade it)`);
+      // Everything in a sleeve is this script's to manage: a reallocation can hand it a slice of
+      // assets it does not trade, and it must be able to sell them (the WASM's sell_unmanaged).
+      const params = { ...parseStrategyParams(s.id, { stable: p.strategy.params.stable ?? "USDC", ...s.params }), sell_unmanaged: true };
+      const symbols = strategySymbols(s.id, params);
+      const missing = symbols.filter((x) => !px[x]);
+      if (missing.length) {
+        agents.push({ key: s.key, strategy: s.id, value_usd: value, skipped: `no current price for ${missing.join(", ")}` });
+        continue;
+      }
+      const portfolio = [...new Set([...symbols, ...Object.keys(sleeve.units).filter((x) => px[x])])]
+        .sort()
+        .map((x) => ({ symbol: x, units: sleeve.units[x] ?? 0, price: px[x]! }));
+      const history = await this.historyFor(s.id, params, symbols, portfolio);
+      const input: StrategyInput = { strategy: s.id, params, now_ms: started, state: sleeve.state && typeof sleeve.state === "object" ? sleeve.state : {}, portfolio, history };
+      inputs[s.key] = input;
+      const { output, engine } = await this.decide(input, notes);
+      if (engine === "outlayer") engineUsed = "outlayer";
+      if (!output.ok) {
+        agents.push({ key: s.key, strategy: s.id, value_usd: value, error: output.error ?? "refused the input" });
+        continue;
+      }
+      wants.push({ key: s.key, trades: output.trades });
+      nextState[s.key] = output.state ?? {};
+      agents.push({ key: s.key, strategy: s.id, share: st.alloc[s.key] ?? 0, value_usd: Number(value.toFixed(2)), trades: output.trades, notes: output.notes, target_weights: output.target_weights });
+    }
+
+    // The main agent: net, keep inside the policy, send only the net.
+    const allowed =
+      p.mode === "live" && p.policy && (p.policy as { assets?: string[] | "any" }).assets !== "any"
+        ? new Set(((p.policy as { assets: string[] }).assets ?? []).map((id) => DEFAULT_UNIVERSE.find((a) => a.asset_id === id)?.symbol).filter((x): x is string => Boolean(x)))
+        : undefined;
+    const pl = plan(wants, { allowed });
+    notes.push(...pl.reasons);
+    let executions: ExecutionRow[] = [];
+    let after = holdings;
+    if (pl.trades.length) {
+      const limits = await this.limits(p);
+      if (p.mode === "paper") {
+        const h = { ...holdings };
+        executions = await this.d.executor.paper(p.id, runId, h, pl.trades, limits);
+        await this.d.pilots.update(p.id, { paper_holdings_json: json(h) });
+      } else {
+        executions = await this.d.executor.live(p.id, runId, p.agent_id!, pl.trades, limits);
+      }
+      after = (await this.holdings((await this.d.pilots.get(p.id))!)).holdings;
+    }
+    const realized = Object.fromEntries([...new Set([...Object.keys(after), ...Object.keys(holdings)])].map((a) => [a, (after[a] ?? 0) - (holdings[a] ?? 0)]));
+    const sleeves = attribute(st.sleeves, pl, realized, px, after);
+    // A script's state moves on when its wish was crossed or something it wanted was sent.
+    const sent = executions.some((e) => e.status !== "blocked" && e.status !== "refused");
+    for (const [k, next] of Object.entries(nextState)) {
+      const d = pl.deltas[k] ?? {};
+      const crossed = Object.keys(d).some((a) => (pl.crossed[a] ?? 0) > 0.005);
+      if (!Object.keys(d).length || crossed || sent) sleeves[k] = { units: sleeves[k]?.units ?? {}, state: next };
+    }
+    const everyHours = Math.min(...cfg.scripts.map((s) => Number(s.params.every_hours ?? 24)));
+    await this.d.pilots.update(p.id, { swarm_state_json: json({ ...st, sleeves })!, next_run_at: Date.now() + everyHours * 3_600_000 });
+
+    // Perps: the scripts' perp weights, blended by their shares.
+    const perp: Record<string, number> = {};
+    for (const a of agents) for (const [k, w] of Object.entries((a.target_weights as Record<string, number>) ?? {})) if (k.endsWith("-PERP")) perp[k] = (perp[k] ?? 0) + w * Number(a.share ?? 0);
+    await this.runPerps(p, runId, perp, notes);
+
+    const val = await this.valuation(after);
+    await this.snapshot(p.id, val.total_usd, val.rows);
+    for (const a of agents) {
+      const sl = sleeves[a.key as string];
+      if (sl) a.value_after_usd = Number(valueOf(sl.units, px).toFixed(2));
+    }
+    const output = { ok: true, engine: "swarm", trades: pl.trades, plan: { crossed: pl.crossed, dropped: pl.dropped }, agents, alloc: st.alloc, notes };
+    const inputJson = JSON.stringify({ swarm: cfg, inputs });
+    const wasmSha = this.d.wasm.available() ? this.d.wasm.wasmSha256 : null;
+    await this.d.db
+      .prepare("UPDATE runs SET engine = ?, wasm_sha256 = ?, input_sha256 = ?, output_sha256 = ?, input_json = ?, output_json = ?, status = 'ok', total_usd = ?, finished_at = ?, error = ? WHERE id = ?")
+      .run(engineUsed, wasmSha, sha256Hex(inputJson), sha256Hex(JSON.stringify(output)), inputJson, json(output), val.total_usd, Date.now(), notes.length ? notes.join("; ") : null, runId);
+    await logEvent(this.d.db, p.id, "info", `swarm run ${reason}: ${wants.length} script(s), ${pl.trades.length} net trade(s), ${Object.values(pl.crossed).filter((x) => x > 0.005).length} crossed`, { run_id: runId });
+    return await this.getRun(runId);
   }
 
   /** Where the portfolio stands against the owner's drawdown stop. */
@@ -309,6 +488,7 @@ export class Runner {
     if (!r) return undefined;
     const p = (s: unknown) => (typeof s === "string" ? JSON.parse(s) : null);
     const executions = await this.d.db.prepare("SELECT * FROM executions WHERE run_id = ? ORDER BY created_at").all<Record<string, unknown>>(id);
+    const perps = await this.d.db.prepare("SELECT * FROM perp_orders WHERE run_id = ? ORDER BY created_at").all<Record<string, unknown>>(id);
     return {
       id: r.id as string,
       pilot_id: r.pilot_id as string,
@@ -327,6 +507,7 @@ export class Runner {
       nft_status: r.nft_status as string | null,
       nft_tx: r.nft_tx as string | null,
       executions: executions.map((e) => ({ ...e, request_json: undefined, request: p(e.request_json), quote: p(e.quote_json), quote_json: undefined, response: p(e.response_json), response_json: undefined })),
+      perp_orders: perps.map((o) => ({ ...o, request_json: undefined, request: p(o.request_json), response: p(o.response_json), response_json: undefined })),
     };
   }
 }

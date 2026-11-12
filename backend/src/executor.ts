@@ -44,7 +44,7 @@ export type ExecutionRow = {
 /** Statuses the reconciler still follows. */
 export const OPEN_STATUSES = ["sent", "retry_pending", "QUEUED", "PROCESSING", "PENDING_APPROVAL", "UNCERTAIN"];
 /** Refusals documented as "nothing was sent": safe to try again later under a NEW key. */
-const NOTHING_SENT = new Set([
+export const NOTHING_SENT = new Set([
   "wallet_busy",
   "spend_budget_exceeded",
   "spend_price_unavailable",

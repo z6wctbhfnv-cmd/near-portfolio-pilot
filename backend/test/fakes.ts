@@ -31,6 +31,14 @@ export class FakeAgentApi {
   balances: Record<string, string> = {};
   /** Queue of failures for the next live swaps: an Agent API error code with HTTP status and retryable flag. */
   failNextSwaps: Array<{ status: number; code: string; retryable?: boolean }> = [];
+  /** Withdraw calls (fee payments): body, key, grant; previews are recorded with dry: true. */
+  withdraws: SwapCall[] = [];
+  failNextWithdraws: Array<{ status: number; code: string; retryable?: boolean }> = [];
+  withdrawWarnings: Array<{ code: string; detail: string }> = [];
+  /** Overrides merged into the policy the API reports (e.g. actions and destinations). */
+  policyExtra: Record<string, unknown> = {};
+  /** GET /v1/agents/{id}/history entries, newest first. */
+  history: Array<Record<string, unknown>> = [];
   quoteWarnings: Array<{ code: string; detail: string }> = [];
   nextOpStatus = "PROCESSING";
   seq = 0;
@@ -138,7 +146,7 @@ export class FakeAgentApi {
           transaction_hash: null,
           provider_policy_synced: this.policy.synced,
           cooldowns: { policy_change_available_at: null, unfreeze_available_at: null },
-          policy: { frozen: this.policy.frozen, actions: ["swap"], assets: "any" },
+          policy: { frozen: this.policy.frozen, actions: ["swap"], assets: "any", destinations: { mode: "only", list: [] }, ...this.policyExtra },
           usage: {
             budget: {
               daily: { limit_usd: "100.00", spent_usd: "0", remaining_usd: "100.00", resets_at: null },
@@ -185,7 +193,24 @@ export class FakeAgentApi {
         if (key) this.replay.set(key, res);
         return this.ok(res, 202);
       }
-      if (sub === "" ) return this.ok({ id: m[1], name: "x", status: "ACTIVE" });
+      if (sub === "/withdraw" && method === "POST") {
+        const key = headers.get("idempotency-key");
+        this.withdraws.push({ body, idempotencyKey: key, grant: headers.get("x-grant-token") });
+        if (body.dry) {
+          const usd = Number(body.amount) / 1e6;
+          return this.ok({ dry: true, type: "withdraw", quote: { amount_out: body.amount }, spend: { amount_usd: usd.toFixed(2), budget: {} }, fee: null, warnings: this.withdrawWarnings });
+        }
+        if (key && this.replay.has(key)) return this.ok(this.replay.get(key), 202);
+        const fail = this.failNextWithdraws.shift();
+        if (fail) return this.err(fail.status, fail.code, fail.retryable);
+        const cid = `op_${++this.seq}`;
+        this.ops.set(cid, { status: this.nextOpStatus });
+        const res = this.statusBody(cid, "withdraw", this.nextOpStatus);
+        if (key) this.replay.set(key, res);
+        return this.ok(res, 202);
+      }
+      if (sub === "/history") return this.ok({ data: this.history, next_cursor: null });
+      if (sub === "") return this.ok({ id: m[1], name: "x", status: "ACTIVE", wallet: { near_account_id: "agent1.near" } });
     }
     return this.err(404, "not_found");
   }
@@ -239,10 +264,94 @@ export class FakeOutLayer {
   }
 }
 
-export function testApp(env: Record<string, string> = {}) {
+/** The strategy NFT contract's views over a fake NEAR JSON-RPC (host rpc.test). Writes are stubbed per test. */
+export class FakeNftChain {
+  tokens: Record<string, string> = {}; // code hash -> token id
+  holders: Record<string, string> = {};
+  copyFee: Record<string, number> = {};
+  bonds: Record<string, [string, string]> = {}; // token -> [held, required], USD with 6 decimals
+  payments: Record<string, string> = {}; // reference -> credited
+  failViews = false;
+  calls: string[] = [];
+  handle(init: RequestInit): Response {
+    const req = JSON.parse(String(init.body)) as { params: { method_name: string; args_base64: string } };
+    const method = req.params.method_name;
+    const args = JSON.parse(Buffer.from(req.params.args_base64, "base64").toString()) as Record<string, string>;
+    this.calls.push(method);
+    const answer = (v: unknown) =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: "pilot", result: { result: [...Buffer.from(JSON.stringify(v))] } }), { headers: { "content-type": "application/json" } });
+    if (this.failViews) return new Response(JSON.stringify({ jsonrpc: "2.0", id: "pilot", error: { message: "rpc down" } }), { headers: { "content-type": "application/json" } });
+    switch (method) {
+      case "token_by_code_hash":
+        return answer(this.tokens[args.code_hash!] ?? null);
+      case "revenue_receiver":
+        return answer(this.holders[args.token_id!] ?? null);
+      case "copy_fee":
+        return answer([this.copyFee[args.token_id!] ?? 500, 0, 0]);
+      case "bond_status":
+        return answer(this.bonds[args.token_id!] ?? ["0", "100000000"]);
+      case "fee_payment":
+        return answer(this.payments[args.reference!] ?? null);
+      case "record":
+        return answer([]);
+      default:
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: "pilot", error: { message: `no view ${method}` } }), { headers: { "content-type": "application/json" } });
+    }
+  }
+}
+
+/** Hyperliquid testnet stand-in (host api.hyperliquid-testnet.xyz). */
+export class FakeHyperliquid {
+  equity = 1000;
+  positions: Record<string, number> = {};
+  mids: Record<string, number> = { BTC: 70_000, ETH: 2_000, SOL: 100, NEAR: 4 };
+  universe = [
+    { name: "BTC", szDecimals: 5 },
+    { name: "ETH", szDecimals: 4 },
+    { name: "SOL", szDecimals: 2 },
+    { name: "NEAR", szDecimals: 1 },
+  ];
+  orders: Array<{ action: { orders: Array<{ a: number; b: boolean; p: string; s: string; r: boolean; c?: string }>; builder?: unknown }; nonce: number; signature: { r: string; s: string; v: number } }> = [];
+  known = new Map<string, string>(); // cloid -> status
+  failNext: "transport" | "refuse" | null = null;
+  handle(url: URL, init: RequestInit): Response {
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    const ok = (v: unknown) => new Response(JSON.stringify(v), { headers: { "content-type": "application/json" } });
+    if (url.pathname === "/info") {
+      if (body.type === "meta") return ok({ universe: this.universe });
+      if (body.type === "allMids") return ok(Object.fromEntries(Object.entries(this.mids).map(([k, v]) => [k, String(v)])));
+      if (body.type === "clearinghouseState") {
+        const gross = Object.entries(this.positions).reduce((a, [c, n]) => a + Math.abs(n * this.mids[c]!), 0);
+        return ok({ marginSummary: { accountValue: String(this.equity), totalNtlPos: String(gross) }, assetPositions: Object.entries(this.positions).map(([coin, szi]) => ({ position: { coin, szi: String(szi) } })) });
+      }
+      if (body.type === "orderStatus") {
+        const st = this.known.get(String(body.oid));
+        return ok(st ? { status: "order", order: { status: st } } : { status: "unknownOid" });
+      }
+    }
+    if (url.pathname === "/exchange") {
+      const o = body as unknown as FakeHyperliquid["orders"][number];
+      const fail = this.failNext;
+      this.failNext = null;
+      if (fail === "refuse") return ok({ status: "ok", response: { type: "order", data: { statuses: [{ error: "Insufficient margin to place order." }] } } });
+      const w = o.action.orders[0]!;
+      const coin = this.universe[w.a]!.name;
+      this.orders.push(o);
+      this.positions[coin] = (this.positions[coin] ?? 0) + (w.b ? 1 : -1) * Number(w.s);
+      if (w.c) this.known.set(w.c, "filled");
+      if (fail === "transport") return new Response("bad gateway", { status: 502 });
+      return ok({ status: "ok", response: { type: "order", data: { statuses: [{ filled: { totalSz: w.s, avgPx: String(this.mids[coin]), oid: this.orders.length } }] } } });
+    }
+    return new Response("not found", { status: 404 });
+  }
+}
+
+export function testApp(env: Record<string, string> = {}, deps: { wasm?: StrategyWasm } = {}) {
   const agent = new FakeAgentApi();
   const ai = new FakeNearAi();
   const outlayer = new FakeOutLayer();
+  const chain = new FakeNftChain();
+  const hl = new FakeHyperliquid();
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
     const req = input instanceof Request ? input : null;
     const url = new URL(req ? req.url : String(input));
@@ -251,6 +360,8 @@ export function testApp(env: Record<string, string> = {}) {
     if (url.host === "klines.test") return fakeKlines(url);
     if (url.host === "ai.test") return ai.handle(url, merged);
     if (url.host === "outlayer.test") return outlayer.handle(url, merged);
+    if (url.host === "rpc.test") return chain.handle(merged);
+    if (url.host === "api.hyperliquid-testnet.xyz") return hl.handle(url, merged);
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
   const cfg = loadConfig({
@@ -266,6 +377,6 @@ export function testApp(env: Record<string, string> = {}) {
     SCHEDULER_ENABLED: "false",
     ...env,
   });
-  const app = buildApp(cfg, { fetch: fetchImpl, db: openDb(":memory:"), settleWaitMs: 0 });
-  return { app, agent, ai, outlayer, cfg };
+  const app = buildApp(cfg, { fetch: fetchImpl, db: openDb(":memory:"), settleWaitMs: 0, ...(deps.wasm ? { wasm: deps.wasm } : {}) });
+  return { app, agent, ai, outlayer, chain, hl, cfg, fetch: fetchImpl };
 }

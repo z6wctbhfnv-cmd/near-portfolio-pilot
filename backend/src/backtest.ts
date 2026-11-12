@@ -14,6 +14,9 @@ export type BacktestRequest = {
   to: number;
   initial_usd: number;
   cost_bps: number;
+  /** Start from these units instead of `initial_usd` in the stablecoin (metrics still use initial_usd as the start value). */
+  initial_units?: Record<string, number>;
+  initial_state?: unknown;
 };
 
 export type StrategyOutput = {
@@ -86,8 +89,13 @@ export async function backtest(wasm: StrategyWasm, history: PriceHistory, req: B
 
   const cost = req.cost_bps / 10_000;
   const units: Record<string, number> = Object.fromEntries(symbols.map((s) => [s, 0]));
-  units[stable] = req.initial_usd; // start fully in the stablecoin
-  let state: unknown = {};
+  if (req.initial_units) {
+    // Replay from a real position (the daily health check's drift test).
+    for (const s of symbols) units[s] = Math.max(0, req.initial_units[s] ?? 0);
+  } else {
+    units[stable] = req.initial_usd; // start fully in the stablecoin
+  }
+  let state: unknown = req.initial_state ?? {};
   const everyDays = Math.max(1, Math.round(Number(params.every_hours ?? 24) / 24));
   const equity: number[] = [];
   const curve: Array<{ day: string; usd: number }> = [];

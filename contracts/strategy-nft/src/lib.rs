@@ -25,6 +25,15 @@
 //! referrer and the treasury withdraw when they like. NFT sales pay no referral. This keeps the agent's policy simple: its only allowed
 //! destination is this contract.
 //!
+//! Two ways a fee arrives:
+//! - `ft_transfer_call` from the payer's own wallet (`ft_on_transfer` splits it at once);
+//! - a NEAR Intents Agent API agent cannot attach a `msg` (its withdraw and transfer calls have no
+//!   such field), so it withdraws plain USDC to this contract (`ft_transfer`, no callback) and the
+//!   recorder then names the payer and the script with `record_fee_payment`. The contract reads its
+//!   own token balance and credits at most the part that is not already owed to anyone
+//!   (`liabilities`), once per payment `reference`. The recorder can misname a payer but cannot
+//!   credit money that never arrived.
+//!
 //! The current holder receives the author's share of fees (`revenue_receiver`). Selling the NFT sells
 //! that income and the history with it. Only the `recorder` (the pilot's account) may append
 //! checkpoints, and checkpoints can never be edited or removed.
@@ -65,6 +74,10 @@ pub const REFERRAL_FEE_BPS: u128 = 10;
 pub const SALE_FEE_BPS: u128 = 50;
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_RESOLVE: Gas = Gas::from_tgas(10);
+const GAS_BALANCE_OF: Gas = Gas::from_tgas(5);
+const GAS_ON_BALANCE: Gas = Gas::from_tgas(25);
+/// A fee payment's reference, e.g. "sha256:<hex of the fee terms>", as the Agent API allows.
+const MAX_REFERENCE_LEN: usize = 128;
 
 #[derive(Deserialize)]
 #[serde(crate = "near_sdk::serde")]
@@ -299,8 +312,14 @@ impl Contract {
     #[private]
     pub fn resolve_withdraw(&mut self, who: AccountId, fee_token: AccountId, amount: U128) -> bool {
         let ok = matches!(env::promise_result_checked(0, 0), Ok(_));
-        if !ok {
-            self.credit(&who, &fee_token, amount.0);
+        if ok {
+            // The tokens have left: only now do they stop being owed.
+            add_liability(&fee_token, -(amount.0 as i128));
+        } else {
+            // Still owed (withdraw_fees never lowered the liability): give the balance back only.
+            let key = (who, fee_token);
+            let cur = self.balances.get(&key).copied().unwrap_or(0);
+            self.balances.insert(key, cur + amount.0);
         }
         ok
     }
@@ -458,6 +477,7 @@ impl Contract {
             require!(held.0 - amount.0 >= required.0, "copiers follow this script: the bond cannot go below the minimum");
         }
         env::storage_write(&k, &(cur - amount.0).to_le_bytes());
+        add_liability(&fee_token, -(amount.0 as i128));
         self.credit(&who, &fee_token, amount.0);
         self.withdraw_fees(fee_token)
     }
@@ -471,6 +491,7 @@ impl Contract {
             let amt = read_u128(&k);
             if amt > 0 {
                 env::storage_remove(&k);
+                add_liability(&t, -(amt as i128));
                 self.credit(old_holder, &t, amt);
             }
         }
@@ -536,6 +557,7 @@ impl Contract {
         let key = (who.clone(), fee_token.clone());
         let cur = self.balances.get(&key).copied().unwrap_or(0);
         self.balances.insert(key, cur + amount);
+        add_liability(fee_token, amount as i128);
     }
 
     /// Split a fee payment. Returns (holder part, platform part incl. referral).
@@ -579,6 +601,88 @@ impl Contract {
     pub fn set_recorder(&mut self, recorder: AccountId) {
         require!(env::predecessor_account_id() == self.owner, "only the owner");
         self.recorder = recorder;
+    }
+
+    /// A fee paid by an Agent API agent: the agent withdrew `amount` of `fee_token` to this contract with
+    /// a plain transfer, so nothing told the contract who paid. The recorder names the payer (the
+    /// owner's NEAR account, so referrals and "own script" work as with `ft_transfer_call`) and the
+    /// script. The contract checks its own balance and credits at most the unowed surplus, once per
+    /// `reference`. No deposit: a function-call key can call it; the contract pays the marker's storage.
+    pub fn record_fee_payment(&mut self, payer: AccountId, token_id: TokenId, fee_token: AccountId, amount: U128, reference: String) -> Promise {
+        require!(env::predecessor_account_id() == self.recorder, "only the recorder can record payments");
+        require!(self.fee_tokens.contains(&fee_token), "token not accepted for fees");
+        require!(self.strategies.get(&token_id).is_some(), "unknown strategy");
+        require!(amount.0 > 0, "amount must be positive");
+        require!(
+            !reference.is_empty() && reference.len() <= MAX_REFERENCE_LEN && reference.bytes().all(|b| (0x21..=0x7e).contains(&b)),
+            "reference must be 1..128 printable characters"
+        );
+        require!(!env::storage_has_key(&payment_key(&reference)), "payment already recorded");
+        Promise::new(fee_token.clone())
+            .function_call(
+                "ft_balance_of".to_string(),
+                near_sdk::serde_json::json!({ "account_id": env::current_account_id() }).to_string().into_bytes(),
+                NearToken::from_yoctonear(0),
+                GAS_BALANCE_OF,
+            )
+            .then(
+                Promise::new(env::current_account_id()).function_call(
+                    "on_fee_balance".to_string(),
+                    near_sdk::serde_json::json!({
+                        "payer": payer, "token_id": token_id, "fee_token": fee_token, "amount": amount, "reference": reference,
+                    })
+                    .to_string()
+                    .into_bytes(),
+                    NearToken::from_yoctonear(0),
+                    GAS_ON_BALANCE,
+                ),
+            )
+    }
+
+    /// Callback of `record_fee_payment`. Returns the amount credited (0 = nothing).
+    ///
+    /// The surplus check guards against bugs and a careless recorder; it is not a proof of who paid.
+    /// While a `withdraw_fees` transfer is in flight its amount is still counted as owed, so the surplus
+    /// can only be understated then, never overstated.
+    #[private]
+    pub fn on_fee_balance(&mut self, payer: AccountId, token_id: TokenId, fee_token: AccountId, amount: U128, reference: String) -> U128 {
+        let balance: u128 = match env::promise_result_checked(0, 100) {
+            Ok(bytes) => match near_sdk::serde_json::from_slice::<U128>(&bytes) {
+                Ok(b) => b.0,
+                Err(_) => {
+                    env::log_str(&format!("fee {reference}: unreadable balance"));
+                    return U128(0);
+                }
+            },
+            Err(_) => {
+                env::log_str(&format!("fee {reference}: balance read failed"));
+                return U128(0);
+            }
+        };
+        if env::storage_has_key(&payment_key(&reference)) {
+            env::log_str(&format!("fee {reference}: already recorded"));
+            return U128(0);
+        }
+        let surplus = balance.saturating_sub(self.liabilities(fee_token.clone()).0);
+        let credited = amount.0.min(surplus);
+        if credited == 0 {
+            env::log_str(&format!("fee {reference}: nothing unowed on the balance, nothing credited"));
+            return U128(0);
+        }
+        self.split_fee(&payer, &token_id, &fee_token, credited);
+        env::storage_write(&payment_key(&reference), &credited.to_le_bytes());
+        env::log_str(&format!("fee {reference}: {credited} of {} credited for {token_id}, paid by {payer}", amount.0));
+        U128(credited)
+    }
+
+    /// The amount credited for a recorded payment, or None if it was never recorded.
+    pub fn fee_payment(&self, reference: String) -> Option<U128> {
+        env::storage_read(&payment_key(&reference)).map(|b| U128(u128::from_le_bytes(b.try_into().unwrap())))
+    }
+
+    /// What the contract owes in `fee_token`: withdrawable balances, bonds, and withdrawals in flight.
+    pub fn liabilities(&self, fee_token: AccountId) -> U128 {
+        U128(read_u128(&liability_key(&fee_token)))
     }
 
     // --- views ---------------------------------------------------------------------------
@@ -670,6 +774,7 @@ impl FungibleTokenReceiver for Contract {
             let k = bond_key(&m.token_id, &fee_token);
             let cur = read_u128(&k);
             env::storage_write(&k, &(cur + amount.0).to_le_bytes());
+            add_liability(&fee_token, amount.0 as i128);
             return PromiseOrValue::Value(U128(0));
         }
         self.split_fee(&sender_id, &m.token_id, &fee_token, amount.0);
@@ -679,6 +784,24 @@ impl FungibleTokenReceiver for Contract {
 
 fn bond_key(token_id: &str, fee_token: &AccountId) -> Vec<u8> {
     [b"bond:".as_slice(), token_id.as_bytes(), b":", fee_token.as_bytes()].concat()
+}
+
+fn liability_key(fee_token: &AccountId) -> Vec<u8> {
+    [b"owed:".as_slice(), fee_token.as_bytes()].concat()
+}
+
+/// Liabilities live in raw storage, like bonds and fees, so existing deployments need no state
+/// migration. A deployment that already holds balances must start from a fresh contract.
+fn add_liability(fee_token: &AccountId, delta: i128) {
+    let k = liability_key(fee_token);
+    let cur = read_u128(&k) as i128;
+    let next = cur + delta;
+    require!(next >= 0, "liabilities cannot go negative");
+    env::storage_write(&k, &(next as u128).to_le_bytes());
+}
+
+fn payment_key(reference: &str) -> Vec<u8> {
+    [b"paid:".as_slice(), reference.as_bytes()].concat()
 }
 
 fn capital_key(token_id: &str) -> Vec<u8> {
@@ -1319,5 +1442,170 @@ mod tests {
         c.nft_transfer(accounts(3), "trend-sma@v1".into(), None, None);
         assert_eq!(c.bond_status("trend-sma@v1".into()).0, U128(0));
         assert_eq!(c.fee_balance(accounts(2), usdc()).0, MIN_BOND);
+    }
+
+    // --- fees paid by Agent API agents (plain withdraw + record_fee_payment) ------------------
+
+    fn nft() -> AccountId {
+        "nft.testnet".parse().unwrap()
+    }
+
+    /// The callback runs as the contract itself, with the token's `ft_balance_of` answer as its result.
+    fn balance_answer(result: near_sdk::PromiseResult) {
+        testing_env!(
+            VMContextBuilder::new().current_account_id(nft()).predecessor_account_id(nft()).build(),
+            near_sdk::test_vm_config(),
+            near_sdk::RuntimeFeesConfig::test(),
+            Default::default(),
+            vec![result],
+        );
+    }
+
+    fn balance_is(raw: u128) {
+        balance_answer(near_sdk::PromiseResult::Successful(format!("\"{raw}\"").into_bytes()));
+    }
+
+    fn record(c: &mut Contract, payer: AccountId, amount: u128, reference: &str) -> u128 {
+        c.on_fee_balance(payer, "trend-sma@v1".into(), usdc(), U128(amount), reference.into()).0
+    }
+
+    #[test]
+    fn liabilities_follow_bonds_fees_and_withdrawals() {
+        let mut c = setup(); // holder bonded MIN_BOND
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND);
+        pay(&mut c, accounts(4), 52_500_000);
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_500_000);
+        // The holder withdraws fees: still owed until the transfer resolves.
+        ctx(accounts(2), 0);
+        let _ = c.withdraw_fees(usdc());
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_500_000);
+        // It failed: the balance comes back, the liability is not counted twice.
+        balance_answer(near_sdk::PromiseResult::Failed);
+        assert!(!c.resolve_withdraw(accounts(2), usdc(), U128(50_000_000)));
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_500_000);
+        // Second try succeeds: now it is no longer owed.
+        ctx(accounts(2), 0);
+        let _ = c.withdraw_fees(usdc());
+        balance_answer(near_sdk::PromiseResult::Successful(vec![]));
+        assert!(c.resolve_withdraw(accounts(2), usdc(), U128(50_000_000)));
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 2_500_000);
+        // A sale returns the bond to the old holder as a balance: still owed, same total.
+        testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(2)).attached_deposit(NearToken::from_yoctonear(1)).build());
+        c.nft_transfer(accounts(3), "trend-sma@v1".into(), None, None);
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 2_500_000);
+    }
+
+    #[test]
+    fn bond_withdrawal_keeps_liabilities_until_it_leaves() {
+        let mut c = setup();
+        bond(&mut c, accounts(2), 50); // more than the minimum, nobody copies
+        ctx(accounts(2), 0);
+        let _ = c.withdraw_bond("trend-sma@v1".into(), usdc(), U128(50));
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 50);
+        balance_answer(near_sdk::PromiseResult::Successful(vec![]));
+        assert!(c.resolve_withdraw(accounts(2), usdc(), U128(50)));
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the recorder can record payments")]
+    fn only_the_recorder_records_payments() {
+        let mut c = setup();
+        ctx(accounts(4), 0);
+        let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), usdc(), U128(1), "sha256:ab".into());
+    }
+
+    #[test]
+    #[should_panic(expected = "token not accepted for fees")]
+    fn recorded_payments_need_a_fee_token() {
+        let mut c = setup();
+        ctx(accounts(1), 0);
+        let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), accounts(3), U128(1), "sha256:ab".into());
+    }
+
+    #[test]
+    #[should_panic(expected = "reference must be")]
+    fn references_are_printable() {
+        let mut c = setup();
+        ctx(accounts(1), 0);
+        let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), usdc(), U128(1), "has space".into());
+    }
+
+    #[test]
+    fn recorder_starts_a_balance_check() {
+        let mut c = setup();
+        ctx(accounts(1), 0);
+        let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), usdc(), U128(52_500_000), "sha256:01".into());
+        let receipts = near_sdk::test_utils::get_created_receipts();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0].receiver_id, usdc());
+    }
+
+    #[test]
+    fn agent_fee_splits_like_a_direct_payment() {
+        let mut c = setup();
+        // The agent withdrew $52.50 to the contract; the contract already owes the bond.
+        balance_is(MIN_BOND + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 52_500_000);
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
+        assert_eq!(c.fee_balance(accounts(5), usdc()).0, 2_500_000);
+        assert_eq!(c.fees_earned("trend-sma@v1".into(), usdc()).0, 50_000_000);
+        assert_eq!(c.fee_payment("sha256:01".into()), Some(U128(52_500_000)));
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_500_000);
+    }
+
+    #[test]
+    fn a_payment_is_recorded_once() {
+        let mut c = setup();
+        balance_is(MIN_BOND + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 52_500_000);
+        // Same reference again (a retry after a lost answer): nothing more is credited.
+        balance_is(MIN_BOND + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 0);
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
+        ctx(accounts(1), 0);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), usdc(), U128(1), "sha256:01".into());
+        }));
+        assert!(r.is_err(), "a recorded reference is refused up front");
+    }
+
+    #[test]
+    fn the_recorder_cannot_credit_money_that_never_arrived() {
+        let mut c = setup();
+        // Only the bond is on the balance: nothing unowed.
+        balance_is(MIN_BOND);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 0);
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 0);
+        assert_eq!(c.fee_payment("sha256:01".into()), None, "can be recorded later, once the money is there");
+        // Part of it arrived (the withdrawal fee came out of the amount): credit only that.
+        balance_is(MIN_BOND + 52_000_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 52_000_000);
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_000_000);
+    }
+
+    #[test]
+    fn failed_balance_read_credits_nothing() {
+        let mut c = setup();
+        balance_answer(near_sdk::PromiseResult::Failed);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 0);
+        assert_eq!(c.fee_payment("sha256:01".into()), None);
+    }
+
+    #[test]
+    fn recorded_payer_gets_referral_and_own_script_rules() {
+        let mut c = setup();
+        ctx(accounts(4), 10);
+        c.set_referrer(accounts(1));
+        balance_is(MIN_BOND + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 52_500_000);
+        assert_eq!(c.fee_balance(accounts(1), usdc()).0, 1_000_000);
+        assert_eq!(c.fee_balance(accounts(5), usdc()).0, 1_500_000);
+        // The holder's own agent pays only Pilot's 0.25%: $2.50 on $1000 of profit.
+        balance_is(MIN_BOND + 52_500_000 + 2_500_000);
+        assert_eq!(record(&mut c, accounts(2), 2_500_000, "sha256:02"), 2_500_000);
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
+        assert_eq!(c.fee_balance(accounts(5), usdc()).0, 4_000_000);
     }
 }
