@@ -89,3 +89,10 @@ test("ask refuses names the records never mention", async () => {
   assert.ok(ask("почему сработала просадка?", events).events.length > 0);
   assert.ok(ask("Why was momentum-top2 fired?", events).events[0].text.includes("momentum-top2"));
 });
+
+test("drawdown stop: 20% by default, can be switched off", () => {
+  assert.equal(compileRules("40% crypto, never send funds out").mandate.max_drawdown, 0.2);
+  assert.equal(compileRules("40% crypto, no stop").mandate.drawdown_mode, "off");
+  assert.equal(compileRules("40% crypto, без стоп-лосса").mandate.drawdown_mode, "off");
+  assert.equal(compileRules("40% crypto, drawdown 15%").mandate.max_drawdown, 0.15);
+});

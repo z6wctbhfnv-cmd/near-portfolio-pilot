@@ -154,6 +154,48 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     expect((await call("POST", `/v1/pilots/${id}/run`)).status).toBe(200);
   });
 
+  it("drawdown stop: sells to the stablecoin and pauses 20% below the peak; can be switched off", async () => {
+    const { app, agent, call } = setup();
+    const mk = async (name: string, extra: object = {}) =>
+      (
+        await call("POST", "/v1/pilots", {
+          name,
+          strategy: { id: "rebalance", params: { weights: { NEAR: 0.8 } } },
+          mandate: { max_trade_usd: 10_000, budget: { daily_usd: 10_000 }, ...extra },
+          initial_usd: 1000,
+        })
+      ).body.pilot;
+    const on = await mk("Stop on");
+    expect(on.mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.2 });
+    const off = await mk("Stop off", { drawdown_stop: { enabled: false } });
+    for (const p of [on, off]) expect((await call("POST", `/v1/pilots/${p.id}/run`)).body.status).toBe("ok");
+
+    // NEAR halves: the portfolio is ~40% below its peak.
+    agent.prices.NEAR = agent.prices.NEAR! / 2;
+    await app.catalog.all(true);
+
+    const stopped = (await call("POST", `/v1/pilots/${on.id}/run`)).body;
+    expect(stopped.error).toMatch(/drawdown stop/);
+    expect(stopped.executions.map((e: { sell_symbol: string; buy_symbol: string; status: string }) => [e.sell_symbol, e.buy_symbol, e.status])).toEqual([["NEAR", "USDC", "paper_filled"]]);
+    expect(app.pilots.get(on.id)!.status).toBe("paused");
+    expect(Object.keys(app.pilots.get(on.id)!.paper_holdings!).filter((s) => app.pilots.get(on.id)!.paper_holdings![s]! > 1e-9)).toEqual(["USDC"]);
+
+    // Switched off: the strategy keeps running instead.
+    const kept = (await call("POST", `/v1/pilots/${off.id}/run`)).body;
+    expect(kept.error ?? "").not.toMatch(/drawdown stop/);
+    expect(app.pilots.get(off.id)!.status).toBe("active");
+
+    // Resuming restarts the peak, so the stop does not fire again straight away.
+    expect((await call("PATCH", `/v1/pilots/${on.id}`, { paused: false })).body.pilot.status).toBe("active");
+    expect((await call("POST", `/v1/pilots/${on.id}/run`)).body.error ?? "").not.toMatch(/drawdown stop/);
+
+    // The owner can move the level or switch it off later.
+    const moved = (await call("PATCH", `/v1/pilots/${on.id}`, { drawdown_stop: { max_drawdown: 0.3 } })).body.pilot;
+    expect(moved.mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.3 });
+    const offNow = (await call("PATCH", `/v1/pilots/${on.id}`, { drawdown_stop: { enabled: false } })).body.pilot;
+    expect(offNow.mandate.drawdown_stop.enabled).toBe(false);
+  });
+
   it("keeps paper pilots inside a weekly budget even without a daily one", async () => {
     const { call } = setup();
     const id = (

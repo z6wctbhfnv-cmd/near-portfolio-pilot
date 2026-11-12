@@ -64,13 +64,15 @@ export function compileRules(text, portfolioUsd = 10_000) {
     warnings.push(`weights added up to ${pct(1 - rest)}; the remaining ${pct(rest)} goes to stablecoins.`);
   }
 
-  let dd = 0.1;
-  const ddm = first(t, `(?:drawdown|draw-down|loss|lose|просадк\\S*|убыт\\S*)[^\\d%]{0,30}${PCT}`, `${PCT}[^\\d%]{0,20}(?:drawdown|loss|просадк\\S*)`);
+  let dd = 0.2;
+  const noStop = /no (?:drawdown )?stop|without (?:a )?(?:drawdown )?stop|stop[- ]?loss off|без стоп|без остановк|выключ\S* стоп|отключ\S* стоп/u.test(t);
+  const ddm = noStop ? null : first(t, `(?:drawdown|draw-down|loss|lose|просадк\\S*|убыт\\S*)[^\\d%]{0,30}${PCT}`, `${PCT}[^\\d%]{0,20}(?:drawdown|loss|просадк\\S*)`);
   if (ddm) dd = num(ddm[1]) / 100;
-  else warnings.push("no drawdown limit found: using 10%.");
-  if (dd < 0.02 || dd > 0.5) throw new Error("drawdown limit must be between 2% and 50%");
+  else if (noStop) warnings.push("drawdown stop is off: on a crash nothing is sold automatically.");
+  else warnings.push("no drawdown limit found: using 20%.");
+  if (dd < 0.02 || dd > 0.9) throw new Error("drawdown limit must be between 2% and 90%");
   // "never below 90% of the peak" / "от максимума" / "ever" -> one floor from the all-time peak.
-  const ddMode = /(?:all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска))/.test(t) ? "from_peak" : "episode";
+  const ddMode = noStop ? "off" : /(?:all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска))/.test(t) ? "from_peak" : "episode";
 
   const dm = first(t, `${MONEY}\\s*(?:per day|a day|daily|/day|в день|за день)`, `(?:daily|per day|в день)[^\\d$]{0,25}${MONEY}`);
   let daily = dm ? money(dm) : null;
@@ -94,7 +96,7 @@ export function compileRules(text, portfolioUsd = 10_000) {
   if (perTx === null) perTx = Math.round(Math.max(100, Math.min(daily, portfolioUsd * 0.1)) * 100) / 100;
 
   // Nothing recognised at all: refuse rather than sign a policy the owner never wrote.
-  const understood = given > 0 || ddm || dm || pm || wm || /never send|no withdraw|nothing (?:leaves|out)|никуда не выводить|не выводить/u.test(t);
+  const understood = given > 0 || noStop || ddm || dm || pm || wm || /never send|no withdraw|nothing (?:leaves|out)|никуда не выводить|не выводить/u.test(t);
   if (!understood) throw new Error("couldn't find any rule in this text. Try: “40% crypto, max drawdown 10%, $500 a day”");
 
   const r4 = (x) => Math.round(x * 1e4) / 1e4;
@@ -104,7 +106,9 @@ export function compileRules(text, portfolioUsd = 10_000) {
     `${pct(mandate.stable_weight)} in stablecoins earning vault yield`,
     `${pct(mandate.gold_weight)} in gold (XAUT)`,
     `${pct(mandate.crypto_weight)} in crypto, managed by strategy scripts`,
-    ddMode === "from_peak"
+    ddMode === "off"
+      ? "No drawdown stop: you switched it off"
+      : ddMode === "from_peak"
       ? `Never below ${pct(1 - dd)} of the all-time peak: at the floor sell everything to USDC and freeze; after you resume, risk shrinks with the buffer left`
       : `If the portfolio falls ${pct(dd)} from its peak: sell everything to USDC and freeze until you resume; the limit restarts after each resume`,
     `At most $${fmt(perTx)} per swap and $${fmt(daily)} of swaps per day`,

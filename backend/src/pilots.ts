@@ -20,6 +20,8 @@ export type PilotRow = {
   review_auto_apply: number;
   next_run_at: number | null;
   next_review_at: number | null;
+  /** The drawdown stop measures the peak from here (creation, or the owner's last resume). */
+  risk_since: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -41,6 +43,7 @@ export function view(r: PilotRow) {
     review_auto_apply: Boolean(r.review_auto_apply),
     next_run_at: r.next_run_at,
     next_review_at: r.next_review_at,
+    risk_since: r.risk_since,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };

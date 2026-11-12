@@ -86,15 +86,18 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
         w["stable"] += rest
         warnings.append(f"weights added up to {1 - rest:.0%}; the remaining {rest:.0%} goes to stablecoins.")
 
-    dd = 0.10
-    m = re.search(rf"(?:drawdown|draw-down|loss|lose|просадк\w*|убыт\w*)[^\d%]{{0,30}}{_PCT}", t) or \
+    dd = 0.20
+    no_stop = re.search(r"no (?:drawdown )?stop|without (?:a )?(?:drawdown )?stop|stop[- ]?loss off|без стоп|без остановк|выключ\w* стоп|отключ\w* стоп", t)
+    m = None if no_stop else re.search(rf"(?:drawdown|draw-down|loss|lose|просадк\w*|убыт\w*)[^\d%]{{0,30}}{_PCT}", t) or \
         re.search(rf"{_PCT}[^\d%]{{0,20}}(?:drawdown|loss|просадк\w*)", t)
     if m:
         dd = _num(m.group(1)) / 100
+    elif no_stop:
+        warnings.append("drawdown stop is off: on a crash nothing is sold automatically.")
     else:
-        warnings.append("no drawdown limit found: using 10%.")
-    if not 0.02 <= dd <= 0.5:
-        raise ValueError("drawdown limit must be between 2% and 50%")
+        warnings.append("no drawdown limit found: using 20%.")
+    if not 0.02 <= dd <= 0.9:
+        raise ValueError("drawdown limit must be between 2% and 90%")
 
     daily = None
     m = re.search(rf"{_MONEY}\s*(?:per day|a day|daily|/day|в день|за день)", t) or \
@@ -119,7 +122,7 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
     else:
         warnings.append("no withdrawal rule found: the agent can only swap, nothing can leave the wallet.")
 
-    understood = bool(given) or bool(re.search(rf"(?:drawdown|draw-down|loss|lose|просадк\w*|убыт\w*)[^\d%]{{0,30}}{_PCT}|{_PCT}[^\d%]{{0,20}}(?:drawdown|loss|просадк\w*)", t)) \
+    understood = bool(given) or bool(no_stop) or bool(re.search(rf"(?:drawdown|draw-down|loss|lose|просадк\w*|убыт\w*)[^\d%]{{0,30}}{_PCT}|{_PCT}[^\d%]{{0,20}}(?:drawdown|loss|просадк\w*)", t)) \
         or daily is not None or per_tx is not None or bool(destinations) \
         or bool(re.search(r"never send|no withdraw|nothing (?:leaves|out)|никуда не выводить|не выводить", t))
     if not understood:
@@ -137,7 +140,7 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
 
     mandate = Mandate(stable_weight=round(w["stable"], 4), gold_weight=round(w["gold"], 4),
                       crypto_weight=round(1 - round(w["stable"], 4) - round(w["gold"], 4), 4), max_drawdown=dd,
-                      drawdown_mode="from_peak" if re.search(r"all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска)", t) else "episode")
+                      drawdown_mode="off" if no_stop else "from_peak" if re.search(r"all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска)", t) else "episode")
     policy = Policy(actions=tuple(actions), per_transaction_usd=per_tx, daily_usd=daily,
                     destinations=frozenset(destinations))
     api_policy = policy.to_agent_api(ASSET_IDS)
@@ -149,7 +152,8 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
         f"{mandate.stable_weight:.0%} in stablecoins earning vault yield",
         f"{mandate.gold_weight:.0%} in gold (XAUT)",
         f"{mandate.crypto_weight:.0%} in crypto, managed by strategy scripts",
-        f"If the portfolio falls {dd:.0%} from its peak: sell everything to USDC and freeze until you resume",
+        ("No drawdown stop: you switched it off" if no_stop else
+         f"If the portfolio falls {dd:.0%} from its peak: sell everything to USDC and freeze until you resume"),
         f"At most ${per_tx:,.0f} per swap and ${daily:,.0f} of swaps per day",
         ("Withdrawals only to " + ", ".join(destinations)) if destinations else "The agent can only swap: no transfers or withdrawals",
         "You can freeze the agent at any moment; freezing is never delayed",
