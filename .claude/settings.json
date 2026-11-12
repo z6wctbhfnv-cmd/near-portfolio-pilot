@@ -8,7 +8,19 @@
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/deploy-check-hook.sh",
             "timeout": 120,
-            "statusMessage": "Checking for deploy conflicts with the team\u2026"
+            "statusMessage": "Checking for deploy conflicts with the team…"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/deploy-check-before-edit.sh",
+            "timeout": 120,
+            "once": true,
+            "statusMessage": "Checking teammates' deploys before the first edit…"
           }
         ]
       }
