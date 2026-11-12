@@ -82,7 +82,8 @@ export function buildServer(app: App) {
   const server = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { level: "info" }, bodyLimit: 1_000_000 });
   // Browsers may call from CORS_ORIGINS only (comma-separated); unset = any origin (local development).
   const origins = app.cfg.CORS_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean);
-  void server.register(cors, { origin: origins?.length ? origins : true });
+  // PATCH and PUT are needed by the web apps (pause/freeze, change strategy); the default allows only GET, HEAD, POST.
+  void server.register(cors, { origin: origins?.length ? origins : true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
 
   server.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
     const token = app.cfg.PILOT_API_TOKEN;
@@ -326,6 +327,10 @@ export function buildServer(app: App) {
   server.post("/v1/pilots/:id/run", async (req) => {
     const p = pilotOr404((req.params as { id: string }).id);
     if (p.status === "pending_owner") throw new HttpError(409, "bad_state", "the owner has not signed agent_create yet");
+    // Freeze means everything stops until the owner resumes, manual runs included.
+    if (p.status === "paused" || p.status === "frozen" || p.status === "archived") {
+      throw new HttpError(409, "bad_state", `the pilot is ${p.status}: resume it before running`);
+    }
     if (p.mode === "live" && !p.agent_id) throw new HttpError(409, "no_agent", "no agent yet");
     if (!app.wasm.available() && !app.outlayer.configured) throw new HttpError(503, "wasm_missing", "strategy WASM is not built: run `npm run build:wasm`");
     try {

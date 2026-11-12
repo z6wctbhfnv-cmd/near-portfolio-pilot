@@ -41,3 +41,15 @@ def test_ask_quotes_only_logged_events():
 
 def test_ask_without_match_says_so():
     assert ask("what about dogecoin?", EVENTS)["events"] == []
+
+
+def test_ask_refuses_names_the_records_never_mention():
+    import json
+    from pathlib import Path
+    raw = json.loads((Path(__file__).parent.parent / "web/data/chronicle.json").read_text())
+    events = raw if isinstance(raw, list) else raw["events"]
+    assert ask("why did you buy dogecoin?", events)["events"] == []
+    assert ask("Why was super-moon@v9 hired?", events)["events"] == []
+    assert ask("When did the drawdown stop trigger?", events)["events"]
+    assert ask("почему сработала просадка?", events)["events"]
+    assert "momentum-top2" in ask("Why was momentum-top2 fired?", events)["events"][0]["text"]

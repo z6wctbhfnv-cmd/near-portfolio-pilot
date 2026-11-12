@@ -18,7 +18,9 @@ _ACCOUNT = r"([a-z0-9_\-]+(?:\.[a-z0-9_\-]+)*\.(?:near|tg)|0x[a-f0-9]{40}|[a-f0-
 
 _STABLE = r"(?:stable(?:coin)?s?|usdc|usdt|cash|стейбл\w*|кэш)"
 _GOLD = r"(?:gold|xaut|paxg|золот\w*)"
-_CRYPTO = r"(?:crypto|btc|bitcoin|eth|ether\w*|sol|solana|крипт\w*)"
+_CRYPTO_ALL = r"(?:crypto|крипт\w*)"
+# Single coins count towards the crypto part: "40% NEAR, 30% BTC" is 70% crypto.
+_CRYPTO_COINS = r"(?:btc|bitcoin|eth|ether\w*|sol|solana|near)"
 
 
 @dataclass
@@ -46,11 +48,28 @@ def _weight(text: str, asset_re: str) -> float | None:
     return None
 
 
+def _weights(text: str, asset_re: str) -> list[float]:
+    """Every "<n>% <asset>" / "<asset> <n>%" mention, each number counted once (by its position)."""
+    found: dict[int, float] = {}
+    for pat in (rf"{_PCT}\s*(?:in|into|to|of|on|в|на)?\s*(?:the\s+)?{asset_re}", rf"{asset_re}\s*[:\-–]?\s*{_PCT}"):
+        for m in re.finditer(pat, text):
+            found[m.start(1)] = _num(m.group(1)) / 100
+    return list(found.values())
+
+
 def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
     t = text.lower()
     warnings: list[str] = []
 
-    w = {"stable": _weight(t, _STABLE), "gold": _weight(t, _GOLD), "crypto": _weight(t, _CRYPTO)}
+    # "40% crypto" wins; otherwise single coins are added up ("40% NEAR, 30% BTC" -> 70% crypto).
+    crypto = _weight(t, _CRYPTO_ALL)
+    if crypto is None:
+        coins = _weights(t, _CRYPTO_COINS)
+        if coins:
+            crypto = sum(coins)
+        if len(coins) > 1:
+            warnings.append(f"the coins you listed add up to {crypto:.0%} crypto; how it is split between them is up to the strategy scripts.")
+    w = {"stable": _weight(t, _STABLE), "gold": _weight(t, _GOLD), "crypto": crypto}
     given = {k: v for k, v in w.items() if v is not None}
     if sum(given.values()) > 1 + 1e-9:
         raise ValueError(f"weights add up to {sum(given.values()):.0%}, more than 100%")
@@ -99,6 +118,12 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
         pass  # swap-only is already the default
     else:
         warnings.append("no withdrawal rule found: the agent can only swap, nothing can leave the wallet.")
+
+    understood = bool(given) or bool(re.search(rf"(?:drawdown|draw-down|loss|lose|просадк\w*|убыт\w*)[^\d%]{{0,30}}{_PCT}|{_PCT}[^\d%]{{0,20}}(?:drawdown|loss|просадк\w*)", t)) \
+        or daily is not None or per_tx is not None or bool(destinations) \
+        or bool(re.search(r"never send|no withdraw|nothing (?:leaves|out)|никуда не выводить|не выводить", t))
+    if not understood:
+        raise ValueError("couldn't find any rule in this text. Try: “40% crypto, max drawdown 10%, $500 a day”")
 
     # Finding from the simulation: the budget also counts emergency sells, so it must cover a full exit.
     if daily is None:

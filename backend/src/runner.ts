@@ -208,18 +208,29 @@ export class Runner {
   }
 
   /**
-   * The mandate's caps for this run. Paper pilots count their own fills of the last 24 h against the
-   * daily budget; live pilots take the remaining budget from the Agent API's policy usage instead.
+   * The mandate's caps for this run. Paper pilots count their own fills against every budget window
+   * the owner set (day, week, month) and take the tightest; live pilots take the remaining budget
+   * from the Agent API's policy usage instead.
    */
   limits(p: Pilot) {
     const m = p.mandate;
     const minTradeUsd = Number(p.strategy.params.min_trade_usd ?? 5);
     let remainingBudgetUsd: number | null = null;
-    if (p.mode === "paper" && m?.budget.daily_usd) {
-      const spent = this.d.db
-        .prepare("SELECT COALESCE(SUM(usd), 0) AS s FROM executions WHERE pilot_id = ? AND status = 'paper_filled' AND created_at > ?")
-        .get(p.id, Date.now() - 86_400_000) as { s: number };
-      remainingBudgetUsd = Math.max(0, m.budget.daily_usd - spent.s);
+    if (p.mode === "paper" && m) {
+      const spentSince = this.d.db.prepare(
+        "SELECT COALESCE(SUM(usd), 0) AS s FROM executions WHERE pilot_id = ? AND status = 'paper_filled' AND created_at > ?",
+      );
+      const day = 86_400_000;
+      for (const [cap, windowMs] of [
+        [m.budget.daily_usd, day],
+        [m.budget.weekly_usd, 7 * day],
+        [m.budget.monthly_usd, 30 * day],
+      ] as const) {
+        if (!cap) continue;
+        const spent = (spentSince.get(p.id, Date.now() - windowMs) as { s: number }).s;
+        const left = Math.max(0, cap - spent);
+        remainingBudgetUsd = remainingBudgetUsd === null ? left : Math.min(remainingBudgetUsd, left);
+      }
     }
     return { maxTradeUsd: m?.max_trade_usd ?? null, remainingBudgetUsd, minTradeUsd };
   }

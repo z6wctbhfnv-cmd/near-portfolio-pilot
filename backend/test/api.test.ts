@@ -141,6 +141,37 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     expect(run2.executions.every((e: { status: string; error_code: string }) => e.status === "blocked" && e.error_code === "mandate_budget")).toBe(true);
   });
 
+  it("lets browsers pause a pilot (CORS allows PATCH) and refuses runs while paused", async () => {
+    const { server, call } = setup();
+    const id = (await call("POST", "/v1/pilots", { name: "Freeze me", strategy: { id: "rebalance", params: { weights: { NEAR: 0.5 } } }, initial_usd: 100 })).body.pilot.id;
+    const pre = await server.inject({ method: "OPTIONS", url: `/v1/pilots/${id}`, headers: { origin: "https://site.example", "access-control-request-method": "PATCH" } });
+    expect(String(pre.headers["access-control-allow-methods"])).toContain("PATCH");
+    expect(String(pre.headers["access-control-allow-methods"])).toContain("PUT");
+    expect((await call("PATCH", `/v1/pilots/${id}`, { paused: true })).body.pilot.status).toBe("paused");
+    const run = await call("POST", `/v1/pilots/${id}/run`);
+    expect(run.status).toBe(409);
+    expect((await call("PATCH", `/v1/pilots/${id}`, { paused: false })).body.pilot.status).toBe("active");
+    expect((await call("POST", `/v1/pilots/${id}/run`)).status).toBe(200);
+  });
+
+  it("keeps paper pilots inside a weekly budget even without a daily one", async () => {
+    const { call } = setup();
+    const id = (
+      await call("POST", "/v1/pilots", {
+        name: "Weekly",
+        strategy: { id: "rebalance", params: { weights: { NEAR: 0.5 } } },
+        mandate: { max_trade_usd: 50, budget: { daily_usd: null, weekly_usd: 120 } },
+        initial_usd: 1000,
+      })
+    ).body.pilot.id;
+    const filled: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const run = (await call("POST", `/v1/pilots/${id}/run`)).body;
+      for (const e of run.executions as Array<{ status: string; usd: number }>) if (e.status === "paper_filled") filled.push(e.usd);
+    }
+    expect(filled).toEqual([50, 50, 20]);
+  });
+
   it("runs trend with cached history and applies an AI review within bounds", async () => {
     const { call, ai } = setup({ NEARAI_API_KEY: "k" });
     ai.answers.push({ risk: "medium", assets: ["NEAR", "BTC"] });

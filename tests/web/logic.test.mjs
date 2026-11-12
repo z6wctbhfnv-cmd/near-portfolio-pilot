@@ -66,3 +66,26 @@ test("ask quotes logged events", () => {
   assert.ok(ask("why was momentum-top2 fired?", ev).events[0].text.startsWith("fired momentum-top2"));
   assert.equal(ask("what about dogecoin?", ev).events.length, 0);
 });
+
+test("single coins add up to the crypto part", () => {
+  const c = compileRules("Осторожно: 40% NEAR, 30% BTC, остальное в USDC, не больше $300 в день");
+  assert.deepEqual([c.mandate.stable_weight, c.mandate.crypto_weight], [0.3, 0.7]);
+  assert.ok(c.warnings.some((w) => w.includes("add up to 70% crypto")));
+  assert.equal(compileRules("40% NEAR 30% BTC").mandate.crypto_weight, 0.7); // no comma: each number once
+  assert.equal(compileRules("40% crypto: 20% BTC, 20% ETH").mandate.crypto_weight, 0.4); // "crypto" wins
+});
+
+test("text with no rule is refused", () => {
+  assert.throws(() => compileRules("asdf qwer"), /couldn't find any rule/);
+});
+
+test("ask refuses names the records never mention", async () => {
+  const fs = await import("node:fs");
+  const raw = JSON.parse(fs.readFileSync(new URL("../../web/data/chronicle.json", import.meta.url)));
+  const events = Array.isArray(raw) ? raw : raw.events;
+  assert.equal(ask("why did you buy dogecoin?", events).events.length, 0);
+  assert.equal(ask("Why was super-moon@v9 hired?", events).events.length, 0);
+  assert.ok(ask("When did the drawdown stop trigger?", events).events.length > 0);
+  assert.ok(ask("почему сработала просадка?", events).events.length > 0);
+  assert.ok(ask("Why was momentum-top2 fired?", events).events[0].text.includes("momentum-top2"));
+});
