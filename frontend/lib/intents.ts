@@ -36,10 +36,19 @@ export async function signAndSubmit(
   const signed = await signIntent(owner, action.intent, wallet);
   let s = await api.submitIntent(action.correlation_id, signed as Record<string, unknown>);
   onStatus(s, "submitted");
-  for (let i = 0; i < 40 && !FINAL.has(s.status); i++) {
+  // A failed status read says nothing about the intent itself: wait and read the same id again.
+  let misses = 0;
+  for (let i = 0; i < 80 && !FINAL.has(s.status); i++) {
     onStatus(s, "polling");
-    s = (await api.intentStatus(action.correlation_id, 20_000)).status;
+    try {
+      s = (await api.intentStatus(action.correlation_id, 8_000)).status;
+      misses = 0;
+    } catch (e) {
+      const status = (e as { status?: number }).status ?? 0;
+      if ((status > 0 && status < 500) || ++misses > 6) throw e;
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
   }
-  onStatus(s, "final");
+  onStatus(s, FINAL.has(s.status) ? "final" : "polling");
   return s;
 }

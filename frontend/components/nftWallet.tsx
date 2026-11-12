@@ -1,7 +1,9 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import type { WalletSelector } from "@near-wallet-selector/core";
 import { motion } from "framer-motion";
+import { useWallet } from "./wallet";
 import { NFT, explorerAccount } from "@/lib/config";
 import { clearChainCache } from "@/lib/chain";
 import { Sheet } from "./ui";
@@ -10,6 +12,11 @@ import { Sheet } from "./ui";
  * A second wallet connection, only for the strategy NFT contract. The NFT contract is on testnet while
  * the owner's main wallet (wallet.tsx) is on mainnet, so this one has its own selector, its own
  * storage prefix and its own small picker (the modal-ui is a singleton and belongs to the main wallet).
+ *
+ * Meteor and MyNearWallet keep one session per browser under fixed localStorage keys, whatever the
+ * network. So the testnet picker never offers the wallet the mainnet session already uses, the selector
+ * is created only where NFTs are used, and an account from the wrong network is ignored, never signed out
+ * (signing out would clear the shared session).
  */
 
 type Module = { id: string; name: string; icon: string };
@@ -17,13 +24,26 @@ export type NftCall = { method: string; args: Record<string, unknown>; deposit: 
 type Ctx = {
   accountId: string | null;
   modules: Module[];
+  /** The wallet the mainnet session uses; the testnet picker leaves it out. */
+  mainWallet: string | null;
   ready: boolean;
+  ensure: () => void;
   signIn: (id: string) => Promise<void>;
   signOut: () => Promise<void>;
   call: (c: NftCall) => Promise<unknown>;
 };
-const NftCtx = createContext<Ctx>({ accountId: null, modules: [], ready: false, signIn: async () => {}, signOut: async () => {}, call: async () => undefined });
+const NftCtx = createContext<Ctx>({ accountId: null, modules: [], mainWallet: null, ready: false, ensure: () => {}, signIn: async () => {}, signOut: async () => {}, call: async () => undefined });
 export const useNftWallet = () => useContext(NftCtx);
+
+/** Does this account belong to the network? Testnet names end in .testnet; implicit accounts are 64 hex. */
+export const onNetwork = (account: string, network: string) =>
+  /^[0-9a-f]{64}$/.test(account) || (network === "testnet" ? account.endsWith(".testnet") : !account.endsWith(".testnet"));
+
+const mainSelectedWallet = (): string | null => {
+  try { return JSON.parse(localStorage.getItem("near-wallet-selector:selectedWalletId") ?? "null"); } catch { return null; }
+};
+
+const LAZY_ROUTES = ["/leaderboard", "/create"];
 
 const prefixed = (p: string) => ({
   getItem: async (k: string) => { try { return localStorage.getItem(p + k); } catch { return null; } },
@@ -41,8 +61,17 @@ export function NftWalletProvider({ children }: { children: React.ReactNode }) {
   const [selector, setSelector] = useState<WalletSelector | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [modules, setModules] = useState<Module[]>([]);
+  const [wanted, setWanted] = useState(false);
+  const [mainWallet, setMainWallet] = useState<string | null>(null);
+  const path = usePathname();
+  const { accountId: mainAccount } = useWallet();
+  const ensure = useCallback(() => setWanted(true), []);
+
+  useEffect(() => { if (LAZY_ROUTES.some((r) => path.startsWith(r))) setWanted(true); }, [path]);
+  useEffect(() => { setMainWallet(mainSelectedWallet()); }, [mainAccount]);
 
   useEffect(() => {
+    if (!wanted) return;
     let unsub: (() => void) | undefined;
     (async () => {
       const [{ setupWalletSelector }, { setupMeteorWallet }, { setupMyNearWallet }] = await Promise.all([
@@ -59,7 +88,8 @@ export function NftWalletProvider({ children }: { children: React.ReactNode }) {
       setSelector(sel);
       const read = () => {
         const s = sel.store.getState();
-        setAccountId(s.accounts.find((a) => a.active)?.accountId ?? null);
+        const a = s.accounts.find((x) => x.active)?.accountId ?? null;
+        setAccountId(a && onNetwork(a, NFT.network) ? a : null);
         setModules(s.modules.map((m) => ({ id: m.id, name: m.metadata.name, icon: m.metadata.iconUrl })));
       };
       read();
@@ -67,10 +97,11 @@ export function NftWalletProvider({ children }: { children: React.ReactNode }) {
       unsub = () => sub.unsubscribe();
     })().catch((e) => console.error("testnet wallet selector failed", e));
     return () => unsub?.();
-  }, []);
+  }, [wanted]);
 
   const signIn = useCallback(async (id: string) => {
     if (!selector) throw new Error("Wallets are still loading.");
+    if (id === mainSelectedWallet()) throw new Error("Your mainnet session already uses this wallet, and it keeps one session per browser. Pick the other wallet, or use near-cli.");
     const w = await selector.wallet(id);
     // No contractId: no function-call key is added to the account, so signing in writes nothing on chain.
     await (w as unknown as { signIn: (p: Record<string, unknown>) => Promise<unknown> }).signIn({});
@@ -93,7 +124,7 @@ export function NftWalletProvider({ children }: { children: React.ReactNode }) {
     return out;
   }, [selector]);
 
-  return <NftCtx.Provider value={{ accountId, modules, ready: !!selector, signIn, signOut, call }}>{children}</NftCtx.Provider>;
+  return <NftCtx.Provider value={{ accountId, modules, mainWallet, ready: !!selector, ensure, signIn, signOut, call }}>{children}</NftCtx.Provider>;
 }
 
 /** The exact near-cli-rs command for the same call, for people who prefer the terminal. */
@@ -112,11 +143,11 @@ export type NftAction = NftCall & {
  * the network, and the CLI equivalent. Nothing is sent until the person taps Sign in their wallet.
  */
 export function NftActionSheet({ action, onClose, onDone }: { action: NftAction | null; onClose: () => void; onDone?: () => void }) {
-  const { accountId, modules, ready, signIn, signOut, call } = useNftWallet();
+  const { accountId, modules, mainWallet, ready, ensure, signIn, signOut, call } = useNftWallet();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [cli, setCli] = useState(false);
-  useEffect(() => { setMsg(null); setCli(false); }, [action]);
+  useEffect(() => { setMsg(null); setCli(false); if (action) ensure(); }, [action, ensure]);
   const args = action?.build ? (accountId ? action.build(accountId) : action.args) : action?.args;
   const full = action && args ? { ...action, args } : action;
 
@@ -152,14 +183,17 @@ export function NftActionSheet({ action, onClose, onDone }: { action: NftAction 
               <p className="mt-1 text-[14px] text-dim">Your main wallet is on mainnet; script NFTs live on {NFT.network}, so this needs a {NFT.network} account.</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 {modules.map((m) => (
-                  <motion.button key={m.id} whileTap={{ scale: 0.96 }} disabled={!ready}
+                  <motion.button key={m.id} whileTap={{ scale: 0.96 }} disabled={!ready || m.id === mainWallet}
                     onClick={() => signIn(m.id).catch((e) => setMsg({ ok: false, text: (e as Error).message }))}
-                    className="flex items-center gap-2 rounded-[16px] bg-card2 px-3 py-3 text-left text-[15px] font-semibold hover:bg-cream">
+                    className="flex items-center gap-2 rounded-[16px] bg-card2 px-3 py-3 text-left text-[15px] font-semibold hover:bg-cream disabled:opacity-40">
                     {m.icon && <img src={m.icon} alt="" className="h-7 w-7 rounded-[8px]" />}{m.name}
                   </motion.button>
                 ))}
                 {!modules.length && <p className="col-span-2 text-[14px] text-dim">Loading wallets…</p>}
               </div>
+              {mainWallet && modules.some((m) => m.id === mainWallet) && (
+                <p className="mt-2 text-[13px] text-dim">{modules.find((m) => m.id === mainWallet)?.name} is greyed out: your mainnet session uses it, and it keeps one session per browser.</p>
+              )}
             </div>
           ) : (
             <>

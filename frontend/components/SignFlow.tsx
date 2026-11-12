@@ -45,6 +45,10 @@ export function SignFlow({ action, owner, onDone, compact = false }: { action: O
     setError(null);
     try {
       const s = await signAndSubmit(action, owner, wallet, (st, p) => { setStatus(st); setPhase(p); });
+      if (!["SUCCESS", "FAILED", "REFUNDED", "NEEDS_REVIEW"].includes(s.status)) {
+        setPhase("idle");
+        setError("Still processing after several minutes. It keeps going on its own; check again from your portfolio. Don’t sign it a second time.");
+      }
       onDone?.(s);
     } catch (e) { setError(liveError(e)); setPhase("idle"); }
   };
@@ -65,7 +69,7 @@ export function SignFlow({ action, owner, onDone, compact = false }: { action: O
       <p className="mt-3 text-[14px] text-dim">Signed by <b className="text-ink">{ownerLabel(owner)}</b> · {action.intent.standard === "webauthn" ? "passkey" : action.intent.standard.toUpperCase()}</p>
       {blocker && <p className="mt-3 rounded-[14px] bg-cream/70 px-3 py-2 text-[14px] leading-snug">{blocker}</p>}
       {!blocker && wrongAccount && <p className="mt-3 rounded-[14px] bg-cream/70 px-3 py-2 text-[14px]">Connect <b>{owner.type === "near" ? owner.account_id : ""}</b> in your wallet to sign this.</p>}
-      {!done && (
+      {!done && (!status || status.status === "PENDING_SIGNATURE" || working) && (
         <motion.button whileTap={{ scale: 0.97 }} onClick={go} disabled={working || (!!wrongAccount && !blocker)} className="btn btn-yel mt-4 w-full">
           {working ? (phase === "signing" ? "Waiting for your signature…" : "Sent, following it…") : owner.type === "passkey" ? "Sign with your passkey" : "Sign in your wallet"}
         </motion.button>

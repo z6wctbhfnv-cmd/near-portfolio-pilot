@@ -24,7 +24,7 @@ Start the backend in another terminal (`cd ../backend && npm start`, port 8787).
 
 The pilot this browser follows is kept in `localStorage` (`dolya.pilot`). With no pilot, or with the backend offline, the screens show demo data and say so.
 
-Two wallets: the owner's main wallet is on **mainnet** (the Agent API is mainnet-only). Script NFTs live on **testnet** (`pilot-nft2-14805.testnet`), so NFT actions use a second, testnet wallet connection (Meteor or MyNearWallet) with its own storage prefix. Every NFT call opens a confirmation sheet with the method, arguments, deposit and the same call for near-cli; nothing is sent until the person signs in their wallet.
+Two wallets: the owner's main wallet is on **mainnet** (the Agent API is mainnet-only). Script NFTs live on **testnet** (`pilot-nft2-14805.testnet`), so NFT actions use a second, testnet wallet connection (Meteor or MyNearWallet) with its own storage prefix. Every NFT call opens a confirmation sheet with the method, arguments, deposit and the same call for near-cli; nothing is sent until the person signs in their wallet. Meteor and MyNearWallet keep one session per browser whatever the network, so the testnet picker greys out the wallet the mainnet session uses, the testnet selector is only created on `/leaderboard`, `/create` or when an NFT sheet opens, and each side ignores an account from the other network.
 
 Override the NFT contract with `NEXT_PUBLIC_NFT_CONTRACT`, `NEXT_PUBLIC_NFT_NETWORK`, `NEXT_PUBLIC_NFT_RPC`, `NEXT_PUBLIC_NFT_EXPLORER`, `NEXT_PUBLIC_NFT_FEE_TOKEN`.
 

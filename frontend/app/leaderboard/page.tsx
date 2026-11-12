@@ -122,7 +122,7 @@ export default function Leaderboard() {
               </span>
               <span className="hidden md:block">{st && st.curve.length > 1 ? <Area data={st.curve} id={`row-${r.id}-${period}`} h={36} w={120} /> : <span className="text-[13px] text-dim">{restarted ? "record restarted" : "no record yet"}</span>}</span>
               <span className="text-right text-[17px] font-bold md:text-left">{st ? money(st.roi) : <span className="text-dim">—</span>}
-                <span className="block text-[12px] font-medium text-dim md:hidden">{st ? `dip ${(st.mdd * 100).toFixed(0)}% · ${copiers} copiers` : restarted ? "new version, record restarted" : "no record yet"}</span>
+                <span className="block text-[12px] font-medium text-dim md:hidden">{st ? `backtest · dip ${(st.mdd * 100).toFixed(0)}% · ${copiers} copiers` : restarted ? "new version, record restarted" : "no record yet"}</span>
               </span>
               <span className="num hidden text-[16px] font-semibold text-down md:block">{st ? `−${(st.mdd * 100).toFixed(1)}%` : "—"}</span>
               <span className="num hidden text-[16px] font-semibold md:block">{r.chain ? copiers : "—"}</span>

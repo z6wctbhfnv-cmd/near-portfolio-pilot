@@ -43,7 +43,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setSelector(sel);
       setModal(setupModal(sel, { theme: "light" }));
       const read = () => {
-        const a = sel.store.getState().accounts.find((x) => x.active);
+        // A testnet account here means the NFT wallet's session leaked into this one (some wallets keep one
+        // session per browser): treat it as not connected rather than as the mainnet owner.
+        const a = sel.store.getState().accounts.find((x) => x.active && !x.accountId.endsWith(".testnet"));
         setAccountId(a?.accountId ?? null);
         setPublicKey(a?.publicKey ?? null);
       };
