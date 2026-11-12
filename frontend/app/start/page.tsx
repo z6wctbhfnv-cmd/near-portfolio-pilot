@@ -25,6 +25,9 @@ function rowsFrom(p: ParseResult) {
   ];
 }
 
+const stopText = (s?: { enabled: boolean; max_drawdown: number }) =>
+  !s || s.enabled ? `Sell to cash at −${Math.round((s?.max_drawdown ?? 0.2) * 100)}% from the peak` : "Off";
+
 export default function Start() {
   const { accountId, connect } = useWallet();
   const [step, setStep] = useState(0);
@@ -48,7 +51,10 @@ export default function Start() {
   const sign = async () => {
     setBusy(true); setError(null);
     try {
-      const r = await api.createPilot({ name: accountId ? `${accountId} pilot` : "My pilot", text, initial_usd: amount });
+      // Create from the mandate the owner just reviewed, not from the text again: a second AI read
+      // could differ from what was shown (and takes another 10–20 s).
+      const name = accountId ? `${accountId} pilot` : "My pilot";
+      const r = await api.createPilot(parsed ? { name, mandate: parsed.mandate, initial_usd: amount } : { name, text, initial_usd: amount });
       setCurrentPilotId(r.pilot.id);
       setStep(3);
     } catch (e) {
@@ -112,6 +118,19 @@ export default function Start() {
                   </motion.div>
                 ))}
               </div>
+              {parsed && (
+                <div className="card mt-3 flex items-center justify-between gap-4 px-5 py-4">
+                  <div className="min-w-0">
+                    <p className="text-[15px] text-dim">Safety stop</p>
+                    <p className="text-[17px] font-semibold">{stopText(parsed.mandate.drawdown_stop)}</p>
+                  </div>
+                  <button type="button" role="switch" aria-checked={parsed.mandate.drawdown_stop?.enabled ?? true} aria-label="Safety stop"
+                    onClick={() => setParsed({ ...parsed, mandate: { ...parsed.mandate, drawdown_stop: { max_drawdown: parsed.mandate.drawdown_stop?.max_drawdown ?? 0.2, enabled: !(parsed.mandate.drawdown_stop?.enabled ?? true) } } })}
+                    className={`relative h-8 w-14 shrink-0 rounded-full transition-colors ${(parsed.mandate.drawdown_stop?.enabled ?? true) ? "bg-yel" : "bg-card2"}`}>
+                    <span className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-all ${(parsed.mandate.drawdown_stop?.enabled ?? true) ? "left-7" : "left-1"}`} />
+                  </button>
+                </div>
+              )}
               {notes.length > 0 && (
                 <div className="mt-3 rounded-[18px] bg-card2 p-4 text-[14px] text-ink/80">
                   <p className="font-semibold">Filled in for you</p>
