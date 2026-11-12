@@ -70,22 +70,22 @@ export class AgentGateway {
     const generated = await this.api().generateIntent(request as never, { idempotencyKey });
     const now = Date.now();
     const g = generated as unknown as { correlation_id: string; type: string; agent_id?: string };
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO owner_intents (correlation_id, pilot_id, type, status, agent_id, generated_json, meta_json, created_at, updated_at)
          VALUES (?, ?, ?, 'PENDING_SIGNATURE', ?, ?, ?, ?, ?)`,
       )
       .run(g.correlation_id, pilotId, g.type, g.agent_id ?? (request as { agent_id?: string }).agent_id ?? null, json(generated), json(meta), now, now);
-    logEvent(this.db, pilotId, "info", `owner intent ${g.type} generated`, { correlation_id: g.correlation_id });
+    await logEvent(this.db, pilotId, "info", `owner intent ${g.type} generated`, { correlation_id: g.correlation_id });
     return generated;
   }
 
   /** Step 3: submit the wallet's signature. Resubmitting the same signature is safe. */
   async submit(correlationId: string, signedData: SignedData) {
-    const row = this.intentRow(correlationId);
+    const row = await this.intentRow(correlationId);
     if (!row) throw new NotFound(`unknown correlation_id ${correlationId}`);
     const status = await this.api().submitIntent({ type: row.type, correlation_id: correlationId, signed_data: signedData } as never);
-    this.db
+    await this.db
       .prepare("UPDATE owner_intents SET submitted_at = ?, status = ?, last_status_json = ?, updated_at = ? WHERE correlation_id = ?")
       .run(Date.now(), (status as { status: string }).status, json(status), Date.now(), correlationId);
     return status;
@@ -97,16 +97,16 @@ export class AgentGateway {
       status: string;
       type?: string;
     };
-    this.db
+    await this.db
       .prepare("UPDATE owner_intents SET status = ?, last_status_json = ?, updated_at = ? WHERE correlation_id = ?")
       .run(status.status, json(status), Date.now(), correlationId);
     return status;
   }
 
   intentRow(correlationId: string) {
-    return this.db.prepare("SELECT * FROM owner_intents WHERE correlation_id = ?").get(correlationId) as
-      | { correlation_id: string; pilot_id: string | null; type: string; status: string; agent_id: string | null; generated_json: string; meta_json: string | null }
-      | undefined;
+    return this.db
+      .prepare("SELECT * FROM owner_intents WHERE correlation_id = ?")
+      .get<{ correlation_id: string; pilot_id: string | null; type: string; status: string; agent_id: string | null; generated_json: string; meta_json: string | null }>(correlationId);
   }
 
   isTerminal(status: string) {
@@ -124,7 +124,7 @@ export class AgentGateway {
       pilotId,
     );
     const id = randomUUID();
-    this.db
+    await this.db
       .prepare(
         "INSERT INTO grants (id, pilot_id, label, token_enc, commitment, correlation_id, expires_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
       )
@@ -133,16 +133,16 @@ export class AgentGateway {
   }
 
   /** Marks grants active/revoked once their owner intents settle. */
-  settleGrant(correlationId: string, status: string) {
-    if (status === "SUCCESS") this.db.prepare("UPDATE grants SET status = 'active' WHERE correlation_id = ? AND status = 'pending'").run(correlationId);
-    if (status === "FAILED" || status === "REFUNDED") this.db.prepare("UPDATE grants SET status = 'failed' WHERE correlation_id = ?").run(correlationId);
+  async settleGrant(correlationId: string, status: string) {
+    if (status === "SUCCESS") await this.db.prepare("UPDATE grants SET status = 'active' WHERE correlation_id = ? AND status = 'pending'").run(correlationId);
+    if (status === "FAILED" || status === "REFUNDED") await this.db.prepare("UPDATE grants SET status = 'failed' WHERE correlation_id = ?").run(correlationId);
   }
 
   /** The newest active, unexpired grant client for a pilot, or null. */
-  grantClient(pilotId: string): AgentApi | null {
-    const row = this.db
+  async grantClient(pilotId: string): Promise<AgentApi | null> {
+    const row = await this.db
       .prepare("SELECT token_enc, expires_at FROM grants WHERE pilot_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1")
-      .get(pilotId) as { token_enc: string; expires_at: string } | undefined;
+      .get<{ token_enc: string; expires_at: string }>(pilotId);
     if (!row || Date.parse(row.expires_at) <= Date.now()) return null;
     return this.api().forGrant(this.box.open(row.token_enc));
   }
@@ -180,11 +180,11 @@ export class AgentGateway {
   pendingIntents(pilotId: string) {
     return this.db
       .prepare("SELECT correlation_id, type, status, created_at FROM owner_intents WHERE pilot_id = ? ORDER BY created_at DESC")
-      .all(pilotId) as Array<{ correlation_id: string; type: string; status: string; created_at: number }>;
+      .all<{ correlation_id: string; type: string; status: string; created_at: number }>(pilotId);
   }
 
-  generatedOf(correlationId: string) {
-    const row = this.intentRow(correlationId);
+  async generatedOf(correlationId: string) {
+    const row = await this.intentRow(correlationId);
     return row ? parse<Record<string, unknown>>(row.generated_json, {}) : null;
   }
 }

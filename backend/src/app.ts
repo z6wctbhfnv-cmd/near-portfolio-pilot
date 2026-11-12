@@ -24,7 +24,9 @@ export type AppDeps = {
 
 export function buildApp(cfg: Config, deps: AppDeps = {}) {
   const f = deps.fetch ?? fetch;
-  const db = deps.db ?? openDb(cfg.DATABASE_PATH);
+  const db = deps.db ?? openDb(cfg.DATABASE_URL ?? cfg.DATABASE_PATH, cfg.DATABASE_AUTH_TOKEN);
+  // With a remote database there is no lasting disk for a generated key file: the key must be set.
+  if (cfg.DATABASE_URL && !cfg.PILOT_MASTER_KEY) throw new Error("PILOT_MASTER_KEY must be set when DATABASE_URL is used");
   const keyFile = resolve(cfg.DATABASE_PATH === ":memory:" ? "/tmp" : dirname(cfg.DATABASE_PATH), ".master_key");
   const box = SecretBox.fromConfig(cfg.PILOT_MASTER_KEY, keyFile);
   const gateway = new AgentGateway(cfg, db, box, f);
@@ -75,68 +77,77 @@ export type App = ReturnType<typeof buildApp>;
  */
 export function startScheduler(app: App, everyMs = 60_000) {
   let busy = false;
-  const tick = async () => {
+  const run = async () => {
     if (busy) return;
     busy = true;
     try {
-      for (const p of app.pilots.due()) {
-        await app.runner.run(p.id, { reason: "scheduled" }).catch((e) => logEvent(app.db, p.id, "error", `scheduled run: ${(e as Error).message}`));
-      }
-      if (app.gateway.hasKey) {
-        await app.executor.reconcile().catch((e) => logEvent(app.db, null, "error", `reconcile: ${(e as Error).message}`));
-        await syncOwnerIntents(app).catch((e) => logEvent(app.db, null, "error", `intent sync: ${(e as Error).message}`));
-      }
-      await publishCheckpoints(app.db, app.nft).catch((e) => logEvent(app.db, null, "error", `nft checkpoints: ${(e as Error).message}`));
-      for (const p of app.pilots.dueReviews()) {
-        await app.reviewer.review(p.id).catch((e) => logEvent(app.db, p.id, "error", `review: ${(e as Error).message}`));
-      }
+      await tick(app);
     } finally {
       busy = false;
     }
   };
-  const handle = setInterval(() => void tick(), everyMs);
-  void tick();
+  const handle = setInterval(() => void run(), everyMs);
+  void run();
   return () => clearInterval(handle);
+}
+
+/**
+ * One pass of background work. The local server calls it every minute; on Vercel, Cron calls
+ * POST /api/cron, which runs exactly this.
+ */
+export async function tick(app: App) {
+  const err = (pilotId: string | null, what: string) => (e: unknown) => logEvent(app.db, pilotId, "error", `${what}: ${(e as Error).message}`);
+  for (const p of await app.pilots.due()) {
+    await app.runner.run(p.id, { reason: "scheduled" }).catch(err(p.id, "scheduled run"));
+  }
+  if (app.gateway.hasKey) {
+    await app.executor.reconcile().catch(err(null, "reconcile"));
+    await syncOwnerIntents(app).catch(err(null, "intent sync"));
+  }
+  await publishCheckpoints(app.db, app.nft).catch(err(null, "nft checkpoints"));
+  for (const p of await app.pilots.dueReviews()) {
+    await app.reviewer.review(p.id).catch(err(p.id, "review"));
+  }
 }
 
 /** Follows submitted owner intents to their end and applies the result to the pilot. */
 export async function syncOwnerIntents(app: App) {
-  const rows = app.db
+  const rows = await app.db
     .prepare("SELECT correlation_id FROM owner_intents WHERE submitted_at IS NOT NULL AND status NOT IN ('SUCCESS','FAILED','REFUNDED','NEEDS_REVIEW')")
-    .all() as Array<{ correlation_id: string }>;
+    .all<{ correlation_id: string }>();
   for (const r of rows) {
     const s = await app.gateway.status(r.correlation_id);
-    applyIntentResult(app, r.correlation_id, s.status);
+    await applyIntentResult(app, r.correlation_id, s.status);
   }
 }
 
 /** Effects of a finished owner intent on local state. */
-export function applyIntentResult(app: App, correlationId: string, status: string) {
-  const row = app.gateway.intentRow(correlationId);
+export async function applyIntentResult(app: App, correlationId: string, status: string) {
+  const row = await app.gateway.intentRow(correlationId);
   if (!row?.pilot_id) return;
-  app.gateway.settleGrant(correlationId, status);
+  await app.gateway.settleGrant(correlationId, status);
   if (status !== "SUCCESS") {
-    if (row.type === "agent_create" && app.gateway.isTerminal(status)) app.pilots.update(row.pilot_id, { status: "draft" });
+    if (row.type === "agent_create" && app.gateway.isTerminal(status)) await app.pilots.update(row.pilot_id, { status: "draft" });
     return;
   }
   const meta = JSON.parse(row.meta_json ?? "null") as { policy?: unknown; mandate?: unknown } | null;
   switch (row.type) {
     case "agent_create":
-      app.pilots.update(row.pilot_id, { status: "active", agent_id: row.agent_id, next_run_at: Date.now() });
+      await app.pilots.update(row.pilot_id, { status: "active", agent_id: row.agent_id, next_run_at: Date.now() });
       break;
     case "policy_update":
-      if (meta?.policy) app.pilots.update(row.pilot_id, { policy_json: JSON.stringify(meta.policy), ...(meta.mandate ? { mandate_json: JSON.stringify(meta.mandate) } : {}) });
+      if (meta?.policy) await app.pilots.update(row.pilot_id, { policy_json: JSON.stringify(meta.policy), ...(meta.mandate ? { mandate_json: JSON.stringify(meta.mandate) } : {}) });
       break;
     case "agent_freeze":
-      app.pilots.update(row.pilot_id, { status: "frozen" });
+      await app.pilots.update(row.pilot_id, { status: "frozen" });
       break;
     case "agent_unfreeze":
-      app.pilots.update(row.pilot_id, { status: "active" });
+      await app.pilots.update(row.pilot_id, { status: "active" });
       break;
     case "agent_archive":
     case "agent_delete":
-      app.pilots.update(row.pilot_id, { status: "archived" });
+      await app.pilots.update(row.pilot_id, { status: "archived" });
       break;
   }
-  logEvent(app.db, row.pilot_id, "info", `owner intent ${row.type} settled: ${status}`, { correlation_id: correlationId });
+  await logEvent(app.db, row.pilot_id, "info", `owner intent ${row.type} settled: ${status}`, { correlation_id: correlationId });
 }

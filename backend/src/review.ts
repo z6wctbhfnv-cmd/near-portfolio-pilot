@@ -41,28 +41,27 @@ export type ReviewMetrics = {
   market_change_pct: Record<string, number | null>;
 };
 
-export function computeMetrics(db: Db, history: PriceHistory, pilotId: string, symbols: string[], from: number, to: number): ReviewMetrics {
-  const snaps = db.prepare("SELECT ts, total_usd FROM snapshots WHERE pilot_id = ? AND ts >= ? AND ts <= ? ORDER BY ts").all(pilotId, from, to) as Array<{
-    ts: number;
-    total_usd: number;
-  }>;
+export async function computeMetrics(db: Db, history: PriceHistory, pilotId: string, symbols: string[], from: number, to: number): Promise<ReviewMetrics> {
+  const snaps = await db
+    .prepare("SELECT ts, total_usd FROM snapshots WHERE pilot_id = ? AND ts >= ? AND ts <= ? ORDER BY ts")
+    .all<{ ts: number; total_usd: number }>(pilotId, from, to);
   let peak = 0;
   let mdd = 0;
   for (const s of snaps) {
     peak = Math.max(peak, s.total_usd);
     if (peak > 0) mdd = Math.max(mdd, 1 - s.total_usd / peak);
   }
-  const runs = db.prepare("SELECT status FROM runs WHERE pilot_id = ? AND started_at >= ? AND started_at <= ?").all(pilotId, from, to) as Array<{ status: string }>;
-  const ex = db
+  const runs = await db.prepare("SELECT status FROM runs WHERE pilot_id = ? AND started_at >= ? AND started_at <= ?").all<{ status: string }>(pilotId, from, to);
+  const ex = await db
     .prepare("SELECT status, error_code, usd FROM executions WHERE pilot_id = ? AND created_at >= ? AND created_at <= ?")
-    .all(pilotId, from, to) as Array<{ status: string; error_code: string | null; usd: number }>;
+    .all<{ status: string; error_code: string | null; usd: number }>(pilotId, from, to);
   const filled = ex.filter((e) => ["paper_filled", "SUCCESS"].includes(e.status));
   const blocked = ex.filter((e) => ["blocked", "refused"].includes(e.status));
   const reasons: Record<string, number> = {};
   for (const b of blocked) reasons[b.error_code ?? "unknown"] = (reasons[b.error_code ?? "unknown"] ?? 0) + 1;
   const market: Record<string, number | null> = {};
   for (const s of symbols) {
-    const c = history.closes(s, from, to);
+    const c = await history.closes(s, from, to);
     market[s] = c.length >= 2 ? Number(((c[c.length - 1]!.close / c[0]!.close - 1) * 100).toFixed(2)) : null;
   }
   const first = snaps[0]?.total_usd ?? null;
@@ -155,12 +154,12 @@ export class Reviewer {
   ) {}
 
   async review(pilotId: string, opts: { periodDays?: number } = {}) {
-    const p = this.pilots.get(pilotId);
+    const p = await this.pilots.get(pilotId);
     if (!p) throw new Error("pilot not found");
     const to = Date.now();
     const from = to - (opts.periodDays ?? this.reviewEveryDays) * DAY;
     const symbols = strategySymbols(p.strategy.id, p.strategy.params);
-    const metrics = computeMetrics(this.db, this.history, pilotId, symbols, from, to);
+    const metrics = await computeMetrics(this.db, this.history, pilotId, symbols, from, to);
 
     let source: "ai" | "rules" = "rules";
     let answer = ruleReview(p.strategy.id, p.strategy.params, metrics);
@@ -191,44 +190,44 @@ export class Reviewer {
     const { accepted, rejected } = sanitizeProposals(p.strategy.id, p.strategy.params, answer.proposals);
     const id = randomUUID();
     const status = accepted.length ? "proposed" : "no_change";
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO reviews (id, pilot_id, period_start, period_end, metrics_json, source, model, summary, risk_flags_json, proposals_json, status, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(id, pilotId, from, to, json(metrics), source, model, answer.summary, json([...answer.risk_flags, ...notes]), json({ accepted, rejected }), status, Date.now());
-    this.pilots.update(pilotId, { next_review_at: to + this.reviewEveryDays * DAY });
-    logEvent(this.db, pilotId, "info", `review (${source}): ${accepted.length} proposal(s)`, { review_id: id });
-    if (accepted.length && p.review_auto_apply) this.apply(id);
-    return this.get(id)!;
+    await this.pilots.update(pilotId, { next_review_at: to + this.reviewEveryDays * DAY });
+    await logEvent(this.db, pilotId, "info", `review (${source}): ${accepted.length} proposal(s)`, { review_id: id });
+    if (accepted.length && p.review_auto_apply) await this.apply(id);
+    return (await this.get(id))!;
   }
 
   /** Applies a review's accepted proposals to the pilot's parameters (re-validated). */
-  apply(reviewId: string) {
-    const r = this.get(reviewId);
+  async apply(reviewId: string) {
+    const r = await this.get(reviewId);
     if (!r) throw new Error("review not found");
     if (r.status !== "proposed") throw new Error(`review is ${r.status}`);
-    const p = this.pilots.get(r.pilot_id)!;
+    const p = (await this.pilots.get(r.pilot_id))!;
     let params = { ...p.strategy.params };
     for (const prop of r.proposals.accepted) params = parseStrategyParams(p.strategy.id, { ...params, [prop.param]: prop.to });
-    this.pilots.update(p.id, { strategy_params_json: json(params)! });
-    this.db.prepare("UPDATE reviews SET status = 'applied', applied_at = ? WHERE id = ?").run(Date.now(), reviewId);
-    logEvent(this.db, p.id, "info", "review proposals applied", { review_id: reviewId, params });
-    return this.get(reviewId)!;
+    await this.pilots.update(p.id, { strategy_params_json: json(params)! });
+    await this.db.prepare("UPDATE reviews SET status = 'applied', applied_at = ? WHERE id = ?").run(Date.now(), reviewId);
+    await logEvent(this.db, p.id, "info", "review proposals applied", { review_id: reviewId, params });
+    return (await this.get(reviewId))!;
   }
 
-  dismiss(reviewId: string) {
-    this.db.prepare("UPDATE reviews SET status = 'dismissed' WHERE id = ? AND status = 'proposed'").run(reviewId);
+  async dismiss(reviewId: string) {
+    await this.db.prepare("UPDATE reviews SET status = 'dismissed' WHERE id = ? AND status = 'proposed'").run(reviewId);
     return this.get(reviewId);
   }
 
-  get(id: string) {
-    const r = this.db.prepare("SELECT * FROM reviews WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  async get(id: string) {
+    const r = await this.db.prepare("SELECT * FROM reviews WHERE id = ?").get<Record<string, unknown>>(id);
     return r ? this.view(r) : undefined;
   }
 
-  list(pilotId: string) {
-    return (this.db.prepare("SELECT * FROM reviews WHERE pilot_id = ? ORDER BY created_at DESC").all(pilotId) as Array<Record<string, unknown>>).map((r) => this.view(r));
+  async list(pilotId: string) {
+    return (await this.db.prepare("SELECT * FROM reviews WHERE pilot_id = ? ORDER BY created_at DESC").all<Record<string, unknown>>(pilotId)).map((r) => this.view(r));
   }
 
   private view(r: Record<string, unknown>) {

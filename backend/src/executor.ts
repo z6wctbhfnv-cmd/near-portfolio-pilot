@@ -94,9 +94,9 @@ export function clampTrade(usd: number, maxTradeUsd: number | null, budgetLeft: 
 export class Executor {
   constructor(private readonly d: ExecutorDeps) {}
 
-  private insert(row: Omit<ExecutionRow, "created_at" | "updated_at" | "attempts"> & { attempts?: number }) {
+  private async insert(row: Omit<ExecutionRow, "created_at" | "updated_at" | "attempts"> & { attempts?: number }) {
     const now = Date.now();
-    this.d.db
+    await this.d.db
       .prepare(
         `INSERT INTO executions (id, pilot_id, run_id, kind, idempotency_key, sell_symbol, buy_symbol, usd, request_json, quote_json, status,
           correlation_id, response_json, error_code, error, attempts, created_at, updated_at)
@@ -124,16 +124,16 @@ export class Executor {
       );
   }
 
-  private update(id: string, fields: Partial<ExecutionRow>) {
+  private async update(id: string, fields: Partial<ExecutionRow>) {
     const keys = Object.keys(fields);
     if (!keys.length) return;
-    this.d.db
+    await this.d.db
       .prepare(`UPDATE executions SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
       .run(...keys.map((k) => (fields as Record<string, string | number | null>)[k] ?? null), Date.now(), id);
   }
 
   get(id: string) {
-    return this.d.db.prepare("SELECT * FROM executions WHERE id = ?").get(id) as ExecutionRow | undefined;
+    return this.d.db.prepare("SELECT * FROM executions WHERE id = ?").get<ExecutionRow>(id);
   }
 
   // ------------------------------------------------------------------ paper
@@ -164,20 +164,20 @@ export class Executor {
         correlation_id: null,
       };
       if (!fit.ok) {
-        this.insert({ ...base, status: "blocked", response_json: null, error_code: fit.code, error: fit.error });
+        await this.insert({ ...base, status: "blocked", response_json: null, error_code: fit.code, error: fit.error });
       } else if (!ps || !pb) {
-        this.insert({ ...base, status: "blocked", response_json: null, error_code: "price_unavailable", error: `no price for ${!ps ? t.sell : t.buy}` });
+        await this.insert({ ...base, status: "blocked", response_json: null, error_code: "price_unavailable", error: `no price for ${!ps ? t.sell : t.buy}` });
       } else {
         const sellUnits = Math.min(holdings[t.sell] ?? 0, t.usd / ps);
         const usd = sellUnits * ps;
         if (usd <= 0) {
-          this.insert({ ...base, status: "blocked", response_json: null, error_code: "insufficient_balance", error: `no ${t.sell} to sell` });
+          await this.insert({ ...base, status: "blocked", response_json: null, error_code: "insufficient_balance", error: `no ${t.sell} to sell` });
         } else {
           const got = (usd * (1 - cost)) / pb;
           budgetLeft -= usd;
           holdings[t.sell] = (holdings[t.sell] ?? 0) - sellUnits;
           holdings[t.buy] = (holdings[t.buy] ?? 0) + got;
-          this.insert({
+          await this.insert({
             ...base,
             usd: Number(usd.toFixed(2)),
             status: "paper_filled",
@@ -187,7 +187,7 @@ export class Executor {
           });
         }
       }
-      results.push(this.get(id)!);
+      results.push((await this.get(id))!);
     }
     return results;
   }
@@ -206,7 +206,7 @@ export class Executor {
   async live(pilotId: string, runId: string, agentId: string, trades: Trade[], limits: TradeLimits) {
     const results: ExecutionRow[] = [];
     const ready = await this.d.gateway.readiness(agentId);
-    const grant = this.d.gateway.grantClient(pilotId);
+    const grant = await this.d.gateway.grantClient(pilotId);
     const blockAll = !ready.ready ? `not ready: ${ready.reasons.join("; ")}` : !grant ? "no active grant for this pilot" : null;
 
     let balances: Record<string, bigint> = {};
@@ -239,33 +239,33 @@ export class Executor {
         correlation_id: null,
         response_json: null,
       };
-      const block = (code: string, error: string, extra: Partial<ExecutionRow> = {}) => {
-        this.insert({ ...base, request_json: json(t)!, status: "blocked", error_code: code, error, ...extra });
-        logEvent(this.d.db, pilotId, "warn", `swap ${t.sell}->${t.buy} blocked: ${code}`, { error });
-        results.push(this.get(id)!);
+      const block = async (code: string, error: string, extra: Partial<ExecutionRow> = {}) => {
+        await this.insert({ ...base, request_json: json(t)!, status: "blocked", error_code: code, error, ...extra });
+        await logEvent(this.d.db, pilotId, "warn", `swap ${t.sell}->${t.buy} blocked: ${code}`, { error });
+        results.push((await this.get(id))!);
       };
       if (blockAll) {
-        block(grant ? "not_ready" : "no_grant", blockAll);
+        await block(grant ? "not_ready" : "no_grant", blockAll);
         continue;
       }
       if (!sellU || !buyU) {
-        block("unknown_asset", `${t.sell} or ${t.buy} is not in the universe`);
+        await block("unknown_asset", `${t.sell} or ${t.buy} is not in the universe`);
         continue;
       }
       if (!fit.ok) {
-        block(fit.code, fit.error);
+        await block(fit.code, fit.error);
         continue;
       }
       const token = await this.d.catalog.get(sellU.asset_id);
       if (!token?.price) {
-        block("price_unavailable", `no current price for ${t.sell}`);
+        await block("price_unavailable", `no current price for ${t.sell}`);
         continue;
       }
       let amount = usdToAtomic(t.usd, token.price, token.decimals);
       const available = balances[sellU.asset_id] ?? 0n;
       if (amount > available) amount = available;
       if (amount <= 0n) {
-        block("insufficient_balance", `no available ${t.sell}`);
+        await block("insufficient_balance", `no available ${t.sell}`);
         continue;
       }
       const request = { origin_asset: sellU.asset_id, destination_asset: buyU.asset_id, amount: amount.toString() };
@@ -275,23 +275,23 @@ export class Executor {
       try {
         quote = await grant!.swap(agentId, { ...request, dry: true });
       } catch (e) {
-        block(e instanceof AgentApiError ? e.code : "quote_failed", (e as Error).message, { request_json: json(request)! });
+        await block(e instanceof AgentApiError ? e.code : "quote_failed", (e as Error).message, { request_json: json(request)! });
         continue;
       }
       if (quote.warnings?.length) {
-        block(quote.warnings[0]!.code, quote.warnings.map((w) => `${w.code}: ${w.detail}`).join("; "), { request_json: json(request)!, quote_json: json(quote) });
+        await block(quote.warnings[0]!.code, quote.warnings.map((w) => `${w.code}: ${w.detail}`).join("; "), { request_json: json(request)!, quote_json: json(quote) });
         continue;
       }
       const amountOut = String(quote.quote?.amountOut ?? quote.quote?.amount_out ?? "");
       if (!/^\d+$/.test(amountOut) || amountOut === "0") {
-        block("quote_unreadable", "quote has no amountOut", { request_json: json(request)!, quote_json: json(quote) });
+        await block("quote_unreadable", "quote has no amountOut", { request_json: json(request)!, quote_json: json(quote) });
         continue;
       }
       const minOut = (BigInt(amountOut) * BigInt(10_000 - this.d.maxSlippageBps)) / 10_000n;
       const live = { ...request, min_amount_out: minOut.toString() };
 
       // Persist the key and the exact body BEFORE sending.
-      this.insert({
+      await this.insert({
         ...base,
         usd: t.usd,
         request_json: json(live)!,
@@ -301,74 +301,74 @@ export class Executor {
         error: null,
       });
       if (!this.d.liveExecution) {
-        this.update(id, { status: "blocked", error_code: "live_execution_disabled", error: "LIVE_EXECUTION is off: quote checked, nothing sent" });
-        results.push(this.get(id)!);
+        await this.update(id, { status: "blocked", error_code: "live_execution_disabled", error: "LIVE_EXECUTION is off: quote checked, nothing sent" });
+        results.push((await this.get(id))!);
         continue;
       }
       await this.send(id, agentId, grant!);
       budgetLeft -= t.usd;
       const amountIn = Number(fromAtomic(amount, token.decimals));
       balances[sellU.asset_id] = available - amount;
-      logEvent(this.d.db, pilotId, "info", `swap sent ${amountIn} ${t.sell} -> ${t.buy}`, { execution_id: id });
-      results.push(this.get(id)!);
+      await logEvent(this.d.db, pilotId, "info", `swap sent ${amountIn} ${t.sell} -> ${t.buy}`, { execution_id: id });
+      results.push((await this.get(id))!);
     }
     if (this.d.liveExecution && (this.d.settleWaitMs ?? 0) > 0) {
       for (const r of results) if (r.correlation_id) await this.refresh(r.id, this.d.settleWaitMs).catch(() => undefined);
     }
-    return results.map((r) => this.get(r.id)!);
+    return Promise.all(results.map(async (r) => (await this.get(r.id))!));
   }
 
   /** Sends (or re-sends) the stored request under its stored key. */
   private async send(id: string, agentId: string, grant: AgentApi) {
-    const row = this.get(id)!;
+    const row = (await this.get(id))!;
     const body = parse<{ origin_asset: string; destination_asset: string; amount: string; min_amount_out?: string }>(row.request_json, null as never);
-    this.update(id, { attempts: row.attempts + 1 });
+    await this.update(id, { attempts: row.attempts + 1 });
     try {
       const res = (await grant.swap(agentId, body, { idempotencyKey: row.idempotency_key })) as { correlation_id: string; status: string };
-      this.update(id, { status: res.status, correlation_id: res.correlation_id, response_json: json(res), error_code: null, error: null });
+      await this.update(id, { status: res.status, correlation_id: res.correlation_id, response_json: json(res), error_code: null, error: null });
     } catch (e) {
       if (e instanceof AgentApiError) {
         if (e.retryable) {
           // May have taken effect: only this key can replay it.
-          this.update(id, { status: "retry_pending", error_code: e.code, error: e.message });
+          await this.update(id, { status: "retry_pending", error_code: e.code, error: e.message });
         } else if (NOTHING_SENT.has(e.code)) {
-          this.update(id, { status: "refused", error_code: e.code, error: e.message });
+          await this.update(id, { status: "refused", error_code: e.code, error: e.message });
         } else {
-          this.update(id, { status: "needs_attention", error_code: e.code, error: e.message });
+          await this.update(id, { status: "needs_attention", error_code: e.code, error: e.message });
         }
       } else if (e instanceof AgentApiRequestError) {
         // Lost response: the request may have reached the API. Replay under the same key later.
-        this.update(id, { status: "retry_pending", error_code: "transport_error", error: e.message });
+        await this.update(id, { status: "retry_pending", error_code: "transport_error", error: e.message });
       } else {
-        this.update(id, { status: "retry_pending", error_code: "unknown_error", error: (e as Error).message });
+        await this.update(id, { status: "retry_pending", error_code: "unknown_error", error: (e as Error).message });
       }
     }
   }
 
   /** Reads one execution's status from the Agent API. */
   async refresh(id: string, waitMs = 0) {
-    const row = this.get(id);
+    const row = await this.get(id);
     if (!row?.correlation_id) return row;
     const s = (await this.d.gateway.api().getStatus(row.correlation_id, waitMs ? { waitMs: Math.min(30_000, waitMs) } : {})) as {
       status: string;
       failure_code: string | null;
     };
-    this.update(id, { status: s.status, response_json: json(s), error_code: s.failure_code ?? null });
-    return this.get(id);
+    await this.update(id, { status: s.status, response_json: json(s), error_code: s.failure_code ?? null });
+    return await this.get(id);
   }
 
   /** Follows open live executions: polls those with a correlation_id, replays retry_pending under the same key. */
   async reconcile(): Promise<{ checked: number; replayed: number }> {
-    const rows = this.d.db
+    const rows = await this.d.db
       .prepare(`SELECT e.*, p.agent_id FROM executions e JOIN pilots p ON p.id = e.pilot_id WHERE e.kind = 'live' AND e.status IN (${OPEN_STATUSES.map(() => "?").join(",")})`)
-      .all(...OPEN_STATUSES) as Array<ExecutionRow & { agent_id: string | null }>;
+      .all<ExecutionRow & { agent_id: string | null }>(...OPEN_STATUSES);
     let checked = 0;
     let replayed = 0;
     for (const r of rows) {
       try {
         if (r.status === "retry_pending") {
           if (!this.d.liveExecution || !r.agent_id) continue;
-          const grant = this.d.gateway.grantClient(r.pilot_id);
+          const grant = await this.d.gateway.grantClient(r.pilot_id);
           if (!grant) continue;
           await this.send(r.id, r.agent_id, grant);
           replayed++;
@@ -377,7 +377,7 @@ export class Executor {
           checked++;
         }
       } catch (e) {
-        logEvent(this.d.db, r.pilot_id, "warn", `reconcile ${r.id} failed`, { error: (e as Error).message });
+        await logEvent(this.d.db, r.pilot_id, "warn", `reconcile ${r.id} failed`, { error: (e as Error).message });
       }
     }
     return { checked, replayed };

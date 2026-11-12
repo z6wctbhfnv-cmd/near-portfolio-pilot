@@ -117,7 +117,7 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     const review = (await call("POST", `/v1/pilots/${id}/review`, {})).body;
     expect(review.source).toBe("rules");
     expect(review.metrics.trades_filled).toBe(2);
-    expect(app.pilots.get(id)!.next_review_at).toBeGreaterThan(Date.now());
+    expect((await app.pilots.get(id))!.next_review_at).toBeGreaterThan(Date.now());
   });
 
   it("shrinks trades to the mandate caps and stops at the daily budget", async () => {
@@ -177,13 +177,14 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     const stopped = (await call("POST", `/v1/pilots/${on.id}/run`)).body;
     expect(stopped.error).toMatch(/drawdown stop/);
     expect(stopped.executions.map((e: { sell_symbol: string; buy_symbol: string; status: string }) => [e.sell_symbol, e.buy_symbol, e.status])).toEqual([["NEAR", "USDC", "paper_filled"]]);
-    expect(app.pilots.get(on.id)!.status).toBe("paused");
-    expect(Object.keys(app.pilots.get(on.id)!.paper_holdings!).filter((s) => app.pilots.get(on.id)!.paper_holdings![s]! > 1e-9)).toEqual(["USDC"]);
+    expect((await app.pilots.get(on.id))!.status).toBe("paused");
+    const held = (await app.pilots.get(on.id))!.paper_holdings!;
+    expect(Object.keys(held).filter((s) => held[s]! > 1e-9)).toEqual(["USDC"]);
 
     // Switched off: the strategy keeps running instead.
     const kept = (await call("POST", `/v1/pilots/${off.id}/run`)).body;
     expect(kept.error ?? "").not.toMatch(/drawdown stop/);
-    expect(app.pilots.get(off.id)!.status).toBe("active");
+    expect((await app.pilots.get(off.id))!.status).toBe("active");
 
     // Resuming restarts the peak, so the stop does not fire again straight away.
     expect((await call("PATCH", `/v1/pilots/${on.id}`, { paused: false })).body.pilot.status).toBe("active");
@@ -194,6 +195,16 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     expect(moved.mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.3 });
     const offNow = (await call("PATCH", `/v1/pilots/${on.id}`, { drawdown_stop: { enabled: false } })).body.pilot;
     expect(offNow.mandate.drawdown_stop.enabled).toBe(false);
+  });
+
+  it("cron route runs one tick only with the secret", async () => {
+    const { call } = setup({ CRON_SECRET: "s3cret" });
+    expect((await call("GET", "/v1/cron")).status).toBe(401);
+    expect((await call("GET", "/v1/cron", undefined, { authorization: "Bearer wrong!" })).status).toBe(401);
+    const ok = await call("GET", "/v1/cron", undefined, { authorization: "Bearer s3cret" });
+    expect(ok.status).toBe(200);
+    expect(ok.body.ok).toBe(true);
+    expect((await setup().call("GET", "/v1/cron", undefined, { authorization: "Bearer s3cret" })).status).toBe(401); // no secret configured: off
   });
 
   it("keeps paper pilots inside a weekly budget even without a daily one", async () => {
@@ -260,12 +271,12 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     await call("PATCH", `/v1/pilots/${b}`, { paused: true });
     app.pilots.update(a, { next_review_at: Date.now() - 1 });
     const stop = startScheduler(app, 3_600_000);
-    for (let i = 0; i < 50 && app.reviewer.list(a).length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 50 && (await app.reviewer.list(a)).length === 0; i++) await new Promise((r) => setTimeout(r, 20));
     stop();
     expect((await call("GET", `/v1/pilots/${a}/runs`)).body.data).toHaveLength(1);
     expect((await call("GET", `/v1/pilots/${b}/runs`)).body.data).toHaveLength(0);
-    expect(app.reviewer.list(a)).toHaveLength(1);
-    expect(app.pilots.get(a)!.next_run_at).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    expect((await app.reviewer.list(a))).toHaveLength(1);
+    expect((await app.pilots.get(a))!.next_run_at).toBeGreaterThan(Date.now() + 23 * 3_600_000);
   });
 
   it("pauses and resumes", async () => {
@@ -314,7 +325,7 @@ describe.skipIf(!wasmBuilt)("live pilot on the Agent API (fake)", () => {
     const g = await t.call("POST", `/v1/pilots/${id}/grants`, { ttl_days: 7 });
     expect(g.status).toBe(201);
     await t.call("POST", `/v1/intents/${g.body.owner_action.correlation_id}/submit`, { signed_data: SIGNED });
-    const grantRow = t.app.db.prepare("SELECT status, token_enc FROM grants WHERE pilot_id = ?").get(id) as { status: string; token_enc: string };
+    const grantRow = (await t.app.db.prepare("SELECT status, token_enc FROM grants WHERE pilot_id = ?").get<{ status: string; token_enc: string }>(id))!;
     expect(grantRow.status).toBe("active");
     expect(grantRow.token_enc).not.toMatch(/ngt_/);
 
@@ -368,14 +379,14 @@ describe.skipIf(!wasmBuilt)("live pilot on the Agent API (fake)", () => {
     expect(agent.swaps).toHaveLength(2);
     expect(agent.swaps[1]!.idempotencyKey).toBe(key); // never a new key for a maybe-sent request
     expect(agent.swaps[1]!.body).toEqual(agent.swaps[0]!.body);
-    const after = app.executor.get(e.id)!;
+    const after = (await app.executor.get(e.id))!;
     expect(after.status).toBe("PROCESSING");
     expect(after.correlation_id).toMatch(/^op_/);
 
     // The reconciler follows it to the end by polling, never by resending.
     agent.ops.get(after.correlation_id!)!.status = "SUCCESS";
     await app.executor.reconcile();
-    expect(app.executor.get(e.id)!.status).toBe("SUCCESS");
+    expect((await app.executor.get(e.id))!.status).toBe("SUCCESS");
     expect(agent.swaps).toHaveLength(2);
   });
 
@@ -440,12 +451,12 @@ describe.skipIf(!wasmBuilt)("live pilot on the Agent API (fake)", () => {
     const cid = upd.body.owner_action.correlation_id;
     await call("POST", `/v1/intents/${cid}/submit`, { signed_data: SIGNED });
     const btc = DEFAULT_UNIVERSE.find((u) => u.symbol === "BTC")!.asset_id;
-    expect(app.pilots.get(id)!.policy).toMatchObject({ assets: expect.arrayContaining([btc]) });
+    expect((await app.pilots.get(id))!.policy).toMatchObject({ assets: expect.arrayContaining([btc]) });
 
     const fr = await call("POST", `/v1/pilots/${id}/freeze`);
     await call("POST", `/v1/intents/${fr.body.owner_action.correlation_id}/submit`, { signed_data: SIGNED });
-    expect(app.pilots.get(id)!.status).toBe("frozen");
-    applyIntentResult(app, "missing", "SUCCESS"); // unknown ids are ignored
+    expect((await app.pilots.get(id))!.status).toBe("frozen");
+    await applyIntentResult(app, "missing", "SUCCESS"); // unknown ids are ignored
     await syncOwnerIntents(app);
   });
 

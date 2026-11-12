@@ -52,7 +52,7 @@ export function view(r: PilotRow) {
 export class Pilots {
   constructor(private readonly db: Db) {}
 
-  create(input: {
+  async create(input: {
     name: string;
     mode: "paper" | "live";
     status: PilotRow["status"];
@@ -66,7 +66,7 @@ export class Pilots {
   }) {
     const id = randomUUID();
     const now = Date.now();
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO pilots (id, name, agent_id, status, mode, owner_json, mandate_json, policy_json, strategy_id, strategy_params_json,
           strategy_state_json, paper_holdings_json, review_auto_apply, next_run_at, next_review_at, created_at, updated_at)
@@ -89,43 +89,47 @@ export class Pilots {
         now,
         now,
       );
-    return this.get(id)!;
+    return (await this.get(id))!;
   }
 
   row(id: string) {
-    return this.db.prepare("SELECT * FROM pilots WHERE id = ?").get(id) as PilotRow | undefined;
+    return this.db.prepare("SELECT * FROM pilots WHERE id = ?").get<PilotRow>(id);
   }
 
-  get(id: string) {
-    const r = this.row(id);
+  async get(id: string) {
+    const r = await this.row(id);
     return r ? view(r) : undefined;
   }
 
-  byAgent(agentId: string) {
-    const r = this.db.prepare("SELECT * FROM pilots WHERE agent_id = ?").get(agentId) as PilotRow | undefined;
+  async byAgent(agentId: string) {
+    const r = await this.db.prepare("SELECT * FROM pilots WHERE agent_id = ?").get<PilotRow>(agentId);
     return r ? view(r) : undefined;
   }
 
-  list() {
-    return (this.db.prepare("SELECT * FROM pilots ORDER BY created_at DESC").all() as PilotRow[]).map(view);
+  async list() {
+    return (await this.db.prepare("SELECT * FROM pilots ORDER BY created_at DESC").all<PilotRow>()).map(view);
   }
 
-  due(now = Date.now()) {
-    return (this.db
-      .prepare("SELECT * FROM pilots WHERE status = 'active' AND (next_run_at IS NULL OR next_run_at <= ?) ORDER BY next_run_at")
-      .all(now) as PilotRow[]).map(view);
+  async due(now = Date.now()) {
+    return (
+      await this.db
+        .prepare("SELECT * FROM pilots WHERE status = 'active' AND (next_run_at IS NULL OR next_run_at <= ?) ORDER BY next_run_at")
+        .all<PilotRow>(now)
+    ).map(view);
   }
 
-  dueReviews(now = Date.now()) {
-    return (this.db
-      .prepare("SELECT * FROM pilots WHERE status IN ('active','frozen') AND next_review_at IS NOT NULL AND next_review_at <= ?")
-      .all(now) as PilotRow[]).map(view);
+  async dueReviews(now = Date.now()) {
+    return (
+      await this.db
+        .prepare("SELECT * FROM pilots WHERE status IN ('active','frozen') AND next_review_at IS NOT NULL AND next_review_at <= ?")
+        .all<PilotRow>(now)
+    ).map(view);
   }
 
-  update(id: string, fields: Partial<Omit<PilotRow, "id" | "created_at">>) {
+  async update(id: string, fields: Partial<Omit<PilotRow, "id" | "created_at">>) {
     const keys = Object.keys(fields);
     if (!keys.length) return this.get(id);
-    this.db
+    await this.db
       .prepare(`UPDATE pilots SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
       .run(...keys.map((k) => (fields as Record<string, string | number | null>)[k] ?? null), Date.now(), id);
     return this.get(id);

@@ -63,8 +63,8 @@ export class Runner {
     return { rows, total_usd: Number(rows.reduce((a, r) => a + (r.usd ?? 0), 0).toFixed(2)) };
   }
 
-  snapshot(pilotId: string, total: number, rows: unknown) {
-    this.d.db.prepare("INSERT INTO snapshots (pilot_id, ts, total_usd, holdings_json) VALUES (?, ?, ?, ?)").run(pilotId, Date.now(), total, json(rows));
+  async snapshot(pilotId: string, total: number, rows: unknown) {
+    await this.d.db.prepare("INSERT INTO snapshots (pilot_id, ts, total_usd, holdings_json) VALUES (?, ?, ?, ?)").run(pilotId, Date.now(), total, json(rows));
   }
 
   /** Runs one decision for a pilot. Never throws for expected failures: they are recorded on the run. */
@@ -73,23 +73,23 @@ export class Runner {
     this.running.add(pilotId);
     const runId = randomUUID();
     const started = Date.now();
-    this.d.db
+    await this.d.db
       .prepare("INSERT INTO runs (id, pilot_id, started_at, engine, status) VALUES (?, ?, ?, 'local', 'running')")
       .run(runId, pilotId, started);
     try {
       return await this.runInner(pilotId, runId, started, opts.reason ?? "manual");
     } catch (e) {
       const msg = (e as Error).message;
-      this.d.db.prepare("UPDATE runs SET status = 'error', error = ?, finished_at = ? WHERE id = ?").run(msg, Date.now(), runId);
-      logEvent(this.d.db, pilotId, "error", `run failed: ${msg}`, { run_id: runId });
-      return this.getRun(runId);
+      await this.d.db.prepare("UPDATE runs SET status = 'error', error = ?, finished_at = ? WHERE id = ?").run(msg, Date.now(), runId);
+      await logEvent(this.d.db, pilotId, "error", `run failed: ${msg}`, { run_id: runId });
+      return await this.getRun(runId);
     } finally {
       this.running.delete(pilotId);
     }
   }
 
   private async runInner(pilotId: string, runId: string, started: number, reason: string) {
-    const p = this.d.pilots.get(pilotId);
+    const p = await this.d.pilots.get(pilotId);
     if (!p) throw new Error("pilot not found");
     const params = p.strategy.params;
     const symbols = strategySymbols(p.strategy.id, params);
@@ -109,7 +109,7 @@ export class Runner {
 
     // Drawdown stop, checked before the strategy gets a say: below the peak by the owner's limit,
     // sell everything to the stablecoin and pause until the owner resumes.
-    const stop = this.drawdownCheck(p, portfolio);
+    const stop = await this.drawdownCheck(p, portfolio);
     if (stop.triggered) return this.emergencyExit(p, runId, holdings, portfolio, stop, reason);
 
     // History: closed days from the cache, plus the live price as the latest point.
@@ -119,7 +119,7 @@ export class Runner {
       const risk = symbols.filter((s) => !DEFAULT_UNIVERSE.find((a) => a.symbol === s)?.stable);
       await this.d.history.ensure(risk, Date.now() - (lookback + 5) * 86_400_000);
       for (const s of risk) {
-        const closes = this.d.history.lastCloses(s, lookback - 1);
+        const closes = await this.d.history.lastCloses(s, lookback - 1);
         const live = portfolio.find((x) => x.symbol === s)?.price;
         history[s] = live ? [...closes, live] : closes;
       }
@@ -158,7 +158,7 @@ export class Runner {
     }
     const outputJson = JSON.stringify(output);
     const wasmSha = this.d.wasm.available() ? this.d.wasm.wasmSha256 : null;
-    this.d.db
+    await this.d.db
       .prepare("UPDATE runs SET engine = ?, wasm_sha256 = ?, input_sha256 = ?, output_sha256 = ?, input_json = ?, output_json = ?, attestation_json = ? WHERE id = ?")
       .run(engine, wasmSha, sha256Hex(inputJson), sha256Hex(outputJson), inputJson, outputJson, json(attestation), runId);
 
@@ -167,11 +167,11 @@ export class Runner {
     // Act.
     let executions: ExecutionRow[] = [];
     if (output.trades.length) {
-      const limits = this.limits(p);
+      const limits = await this.limits(p);
       if (p.mode === "paper") {
         const h = { ...holdings };
         executions = await this.d.executor.paper(pilotId, runId, h, output.trades, limits);
-        this.d.pilots.update(pilotId, { paper_holdings_json: json(h) });
+        await this.d.pilots.update(pilotId, { paper_holdings_json: json(h) });
       } else {
         executions = await this.d.executor.live(pilotId, runId, p.agent_id!, output.trades, limits);
       }
@@ -182,24 +182,24 @@ export class Runner {
     // run would plan the same buy again under a new key (a double buy).
     const acted = !output.trades.length || executions.some((e) => e.status !== "blocked" && e.status !== "refused");
     const everyHours = Number(params.every_hours ?? 24);
-    this.d.pilots.update(pilotId, {
+    await this.d.pilots.update(pilotId, {
       ...(acted ? { strategy_state_json: json(output.state ?? {})! } : {}),
       next_run_at: Date.now() + everyHours * 3_600_000,
     });
 
-    const after = await this.holdings(this.d.pilots.get(pilotId)!);
+    const after = await this.holdings((await this.d.pilots.get(pilotId))!);
     const val = await this.valuation(after.holdings);
-    this.snapshot(pilotId, val.total_usd, val.rows);
+    await this.snapshot(pilotId, val.total_usd, val.rows);
 
-    this.d.db
+    await this.d.db
       .prepare("UPDATE runs SET status = 'ok', total_usd = ?, finished_at = ?, error = ? WHERE id = ?")
       .run(val.total_usd, Date.now(), notes.length ? notes.join("; ") : null, runId);
-    logEvent(this.d.db, pilotId, "info", `run ${reason}: ${output.trades.length} trade(s), engine ${engine}`, { run_id: runId });
+    await logEvent(this.d.db, pilotId, "info", `run ${reason}: ${output.trades.length} trade(s), engine ${engine}`, { run_id: runId });
 
-    await this.publish(runId, p, started).catch((e) => {
-      this.d.db.prepare("UPDATE runs SET nft_status = 'failed', error = COALESCE(error || '; ', '') || ? WHERE id = ?").run(`nft: ${(e as Error).message}`, runId);
+    await this.publish(runId, p, started).catch(async (e) => {
+      await this.d.db.prepare("UPDATE runs SET nft_status = 'failed', error = COALESCE(error || '; ', '') || ? WHERE id = ?").run(`nft: ${(e as Error).message}`, runId);
     });
-    return this.getRun(runId);
+    return await this.getRun(runId);
   }
 
   /**
@@ -207,19 +207,19 @@ export class Runner {
    * appends one checkpoint per script (see nft.ts, publishCheckpoints).
    */
   private async publish(runId: string, _p: Pilot, _startedAt: number) {
-    const run = this.getRun(runId)!;
+    const run = (await this.getRun(runId))!;
     const status = this.d.nft.configured && run.wasm_sha256 ? "queued" : "unpublished";
-    this.d.db.prepare("UPDATE runs SET nft_status = ? WHERE id = ?").run(status, runId);
+    await this.d.db.prepare("UPDATE runs SET nft_status = ? WHERE id = ?").run(status, runId);
   }
 
   /** Where the portfolio stands against the owner's drawdown stop. */
-  drawdownCheck(p: Pilot, portfolio: Array<{ symbol: string; units: number; price: number }>) {
+  async drawdownCheck(p: Pilot, portfolio: Array<{ symbol: string; units: number; price: number }>) {
     const cfg = p.mandate?.drawdown_stop ?? { enabled: true, max_drawdown: 0.2 };
     const value = portfolio.reduce((a, x) => a + x.units * x.price, 0);
-    const row = this.d.db
+    const row = await this.d.db
       .prepare("SELECT MAX(total_usd) AS peak FROM snapshots WHERE pilot_id = ? AND ts >= ?")
-      .get(p.id, p.risk_since ?? 0) as { peak: number | null };
-    const peak = Math.max(row.peak ?? 0, value);
+      .get<{ peak: number | null }>(p.id, p.risk_since ?? 0);
+    const peak = Math.max(row?.peak ?? 0, value);
     const drawdown = peak > 0 ? 1 - value / peak : 0;
     // Nothing risky held means nothing to sell (a fall in value then comes from money moved out).
     const stable = String(p.strategy.params.stable ?? p.mandate?.stable ?? "USDC");
@@ -237,7 +237,7 @@ export class Runner {
     runId: string,
     holdings: Record<string, number>,
     portfolio: Array<{ symbol: string; units: number; price: number }>,
-    stop: ReturnType<Runner["drawdownCheck"]>,
+    stop: Awaited<ReturnType<Runner["drawdownCheck"]>>,
     reason: string,
   ) {
     const stable = String(p.strategy.params.stable ?? p.mandate?.stable ?? "USDC");
@@ -247,33 +247,33 @@ export class Runner {
       .map((x) => ({ sell: x.symbol, buy: stable, usd: Math.floor(x.units * x.price * 100) / 100 }));
     const note = `drawdown stop: ${(stop.drawdown * 100).toFixed(1)}% below the peak of ${stop.peak.toFixed(2)} USD (limit ${(stop.limit * 100).toFixed(0)}%)`;
     const output = { ok: true, engine: "risk", trades, notes: [note], target_weights: { [stable]: 1 } };
-    this.d.db.prepare("UPDATE runs SET engine = 'local', output_json = ? WHERE id = ?").run(json(output), runId);
+    await this.d.db.prepare("UPDATE runs SET engine = 'local', output_json = ? WHERE id = ?").run(json(output), runId);
     const limits = { maxTradeUsd: null, remainingBudgetUsd: null, minTradeUsd: 1 };
     let executions: ExecutionRow[] = [];
     if (trades.length) {
       if (p.mode === "paper") {
         const h = { ...holdings };
         executions = await this.d.executor.paper(p.id, runId, h, trades, limits);
-        this.d.pilots.update(p.id, { paper_holdings_json: json(h) });
+        await this.d.pilots.update(p.id, { paper_holdings_json: json(h) });
       } else {
         executions = await this.d.executor.live(p.id, runId, p.agent_id!, trades, limits);
       }
     }
-    const after = await this.holdings(this.d.pilots.get(p.id)!);
+    const after = await this.holdings((await this.d.pilots.get(p.id))!);
     const val = await this.valuation(after.holdings);
-    this.snapshot(p.id, val.total_usd, val.rows);
+    await this.snapshot(p.id, val.total_usd, val.rows);
     const riskLeft = val.rows.some((r) => !isStable(r.symbol) && (r.usd ?? 0) >= 1);
     // Fully out: pause. Something refused (live policy budget): keep going on the next run.
-    this.d.pilots.update(p.id, riskLeft ? { next_run_at: Date.now() + 3_600_000 } : { status: "paused" });
-    this.d.db
+    await this.d.pilots.update(p.id, riskLeft ? { next_run_at: Date.now() + 3_600_000 } : { status: "paused" });
+    await this.d.db
       .prepare("UPDATE runs SET status = 'ok', total_usd = ?, finished_at = ?, error = ? WHERE id = ?")
       .run(val.total_usd, Date.now(), note, runId);
-    logEvent(this.d.db, p.id, "warn", `${note}: sold ${trades.length} position(s) to ${stable}${riskLeft ? ", the rest on the next run" : ", pilot paused until you resume"}`, {
+    await logEvent(this.d.db, p.id, "warn", `${note}: sold ${trades.length} position(s) to ${stable}${riskLeft ? ", the rest on the next run" : ", pilot paused until you resume"}`, {
       run_id: runId,
       reason,
       executions: executions.map((e) => e.status),
     });
-    return this.getRun(runId);
+    return await this.getRun(runId);
   }
 
   /**
@@ -281,7 +281,7 @@ export class Runner {
    * the owner set (day, week, month) and take the tightest; live pilots take the remaining budget
    * from the Agent API's policy usage instead.
    */
-  limits(p: Pilot) {
+  async limits(p: Pilot) {
     const m = p.mandate;
     const minTradeUsd = Number(p.strategy.params.min_trade_usd ?? 5);
     let remainingBudgetUsd: number | null = null;
@@ -296,7 +296,7 @@ export class Runner {
         [m.budget.monthly_usd, 30 * day],
       ] as const) {
         if (!cap) continue;
-        const spent = (spentSince.get(p.id, Date.now() - windowMs) as { s: number }).s;
+        const spent = (await spentSince.get<{ s: number }>(p.id, Date.now() - windowMs))?.s ?? 0;
         const left = Math.max(0, cap - spent);
         remainingBudgetUsd = remainingBudgetUsd === null ? left : Math.min(remainingBudgetUsd, left);
       }
@@ -304,11 +304,11 @@ export class Runner {
     return { maxTradeUsd: m?.max_trade_usd ?? null, remainingBudgetUsd, minTradeUsd };
   }
 
-  getRun(id: string) {
-    const r = this.d.db.prepare("SELECT * FROM runs WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  async getRun(id: string) {
+    const r = await this.d.db.prepare("SELECT * FROM runs WHERE id = ?").get<Record<string, unknown>>(id);
     if (!r) return undefined;
     const p = (s: unknown) => (typeof s === "string" ? JSON.parse(s) : null);
-    const executions = this.d.db.prepare("SELECT * FROM executions WHERE run_id = ? ORDER BY created_at").all(id) as Array<Record<string, unknown>>;
+    const executions = await this.d.db.prepare("SELECT * FROM executions WHERE run_id = ? ORDER BY created_at").all<Record<string, unknown>>(id);
     return {
       id: r.id as string,
       pilot_id: r.pilot_id as string,

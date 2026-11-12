@@ -1,6 +1,11 @@
+/**
+ * Storage on libSQL: a local SQLite file (or :memory: in tests) for development, and Turso when
+ * DATABASE_URL is a libsql:// URL (serverless deploys such as Vercel, where the disk does not last).
+ * Every query is async; the prepare(sql).get/all/run shape mirrors the old node:sqlite API.
+ */
+import { type Client, createClient, type InValue } from "@libsql/client";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS pilots (
@@ -143,22 +148,66 @@ CREATE TABLE IF NOT EXISTS events (
 );
 `;
 
-export type Db = DatabaseSync;
+type Row = Record<string, unknown>;
+const toArgs = (args: unknown[]) => args.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)) as InValue[];
 
-export function openDb(path: string): Db {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-  const db = new DatabaseSync(path);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  db.exec(SCHEMA);
-  // Columns added after the first release: add them to databases created before.
-  for (const sql of ["ALTER TABLE pilots ADD COLUMN risk_since INTEGER"]) {
-    try {
-      db.exec(sql);
-    } catch {
-      /* already there */
-    }
+export class Db {
+  private readonly ready: Promise<void>;
+
+  constructor(private readonly client: Client, local: boolean) {
+    this.ready = (async () => {
+      if (local) await client.execute("PRAGMA foreign_keys = ON");
+      await client.executeMultiple(SCHEMA);
+      // Columns added after the first release: add them to databases created before.
+      for (const sql of ["ALTER TABLE pilots ADD COLUMN risk_since INTEGER"]) {
+        try {
+          await client.execute(sql);
+        } catch {
+          /* already there */
+        }
+      }
+    })();
   }
-  return db;
+
+  private async exec(sql: string, args: unknown[]) {
+    await this.ready;
+    return this.client.execute({ sql, args: toArgs(args) });
+  }
+
+  prepare(sql: string) {
+    return {
+      get: async <T = Row>(...args: unknown[]): Promise<T | undefined> => {
+        const r = await this.exec(sql, args);
+        return r.rows[0] ? (Object.fromEntries(r.columns.map((c, i) => [c, r.rows[0]![i]])) as T) : undefined;
+      },
+      all: async <T = Row>(...args: unknown[]): Promise<T[]> => {
+        const r = await this.exec(sql, args);
+        return r.rows.map((row) => Object.fromEntries(r.columns.map((c, i) => [c, row[i]])) as T);
+      },
+      run: async (...args: unknown[]) => {
+        const r = await this.exec(sql, args);
+        return { changes: r.rowsAffected };
+      },
+    };
+  }
+
+  /** Several writes in one round trip (e.g. a block of price history). */
+  async batch(stmts: Array<{ sql: string; args: unknown[] }>) {
+    await this.ready;
+    if (stmts.length) await this.client.batch(stmts.map((s) => ({ sql: s.sql, args: toArgs(s.args) })), "write");
+  }
+
+  close() {
+    this.client.close();
+  }
+}
+
+/** ":memory:", a file path, or a libsql:// / https:// Turso URL (with authToken). */
+export function openDb(path: string, authToken?: string): Db {
+  const remote = /^(libsql|https?|wss?):\/\//.test(path);
+  if (!remote && path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  const url = remote ? path : path === ":memory:" ? ":memory:" : `file:${path}`;
+  return new Db(createClient({ url, ...(authToken ? { authToken } : {}), intMode: "number" }), !remote);
 }
 
 export const json = (v: unknown) => (v === undefined ? null : JSON.stringify(v));
@@ -171,8 +220,8 @@ export function parse<T = unknown>(s: unknown, fallback: T): T {
   }
 }
 
-export function logEvent(db: Db, pilotId: string | null, level: "info" | "warn" | "error", message: string, data?: unknown) {
-  db.prepare("INSERT INTO events (pilot_id, ts, level, message, data_json) VALUES (?, ?, ?, ?, ?)").run(
+export async function logEvent(db: Db, pilotId: string | null, level: "info" | "warn" | "error", message: string, data?: unknown) {
+  await db.prepare("INSERT INTO events (pilot_id, ts, level, message, data_json) VALUES (?, ?, ?, ?, ?)").run(
     pilotId,
     Date.now(),
     level,

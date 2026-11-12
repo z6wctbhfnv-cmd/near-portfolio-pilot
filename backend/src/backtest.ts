@@ -76,7 +76,9 @@ export async function backtest(wasm: StrategyWasm, history: PriceHistory, req: B
   await history.ensure(symbols, warmupFrom);
 
   // Price table: day -> symbol -> close, only days where every symbol has a close.
-  const series = Object.fromEntries(symbols.map((s) => [s, new Map(history.closes(s, warmupFrom, to).map((r) => [r.day, r.close]))]));
+  const series = Object.fromEntries(
+    await Promise.all(symbols.map(async (s) => [s, new Map((await history.closes(s, warmupFrom, to)).map((r) => [r.day, r.close]))] as const)),
+  );
   const allDays: number[] = [];
   for (let d = warmupFrom; d <= to; d += DAY_MS) if (symbols.every((s) => series[s]!.has(d))) allDays.push(d);
   const days = allDays.filter((d) => d >= from);
