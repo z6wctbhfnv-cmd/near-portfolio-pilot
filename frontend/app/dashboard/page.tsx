@@ -6,14 +6,17 @@ import { Action, AssetRow, Chart, MoveDetail, MoveRow, Sheet } from "@/component
 import { useWallet } from "@/components/wallet";
 import { usePilot } from "@/lib/usePilot";
 import { usd, type Move } from "@/lib/demo";
+import { TasksCard } from "@/components/TasksCard";
+import { OwnerPanel } from "@/components/OwnerPanel";
 
 const STRAT: Record<string, string> = { rebalance: "Constant mix", trend: "Trend filter", vol_target: "Volatility target", dca: "Weekly buys" };
 
 export default function Dashboard() {
   const [open, setOpen] = useState<Move | null>(null);
   const [tab, setTab] = useState<"assets" | "mix">("assets");
+  const [freezeAsk, setFreezeAsk] = useState(false);
   const { accountId, connect } = useWallet();
-  const { view, error, busy, runNow, togglePause, reviewNow, toggleStop } = usePilot();
+  const { view, error, busy, runNow, togglePause, reviewNow, toggleStop, reload } = usePilot();
   const { pilot, total, holdings, moves, series, reviews, paused, live } = view;
   const m = pilot?.mandate;
   const rules = m
@@ -56,7 +59,7 @@ export default function Dashboard() {
               <Action icon={busy === "run" ? "…" : "▶"} label="Run now" active onClick={live ? runNow : undefined} />
               <Action icon="⇄" label="Strategy" onClick={() => location.assign("/strategies")} />
               <Action icon="≡" label="Rules" onClick={() => location.assign("/start")} />
-              <Action icon="❄" label={paused ? "Resume" : "Freeze"} onClick={live ? togglePause : undefined} />
+              <Action icon="❄" label={paused ? "Resume" : "Freeze"} onClick={live ? () => { togglePause(); if (!paused && pilot?.mode === "live") setFreezeAsk(true); } : undefined} />
             </div>
             {live && error && <p className="mt-4 rounded-[14px] bg-[#fdecea] px-3 py-2 text-[14px] text-down" role="alert">{error}</p>}
           </div>
@@ -119,6 +122,8 @@ export default function Dashboard() {
             )}
           </div>
 
+          {live && pilot?.mode === "live" && <OwnerPanel pilot={pilot} freezeAsk={freezeAsk} onFreezeAsked={() => setFreezeAsk(false)} />}
+
           <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} whileHover="hover" className="card relative overflow-hidden p-6">
             <p className="text-[14px] text-dim">Running strategy</p>
             <p className="display mt-2 pr-28 text-[24px]">{pilot ? STRAT[pilot.strategy.id] ?? pilot.strategy.id : "Calm Rebalance"}</p>
@@ -164,6 +169,8 @@ export default function Dashboard() {
               </motion.button>
             )}
           </motion.div>
+
+          <TasksCard pilotId={live ? pilot?.id ?? null : null} onChanged={reload} />
         </div>
       </div>
       <Sheet open={!!open} onClose={() => setOpen(null)}>{open && <MoveDetail m={open} />}</Sheet>

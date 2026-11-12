@@ -4,6 +4,8 @@ import "./globals.css";
 import { Nav } from "@/components/Nav";
 import { WalletProvider } from "@/components/wallet";
 import { TabBar } from "@/components/TabBar";
+import { NftWalletProvider } from "@/components/nftWallet";
+import { RefCapture } from "@/components/Referral";
 
 const unbounded = Unbounded({ subsets: ["latin", "cyrillic"], weight: ["600", "700"], variable: "--font-unbounded" });
 const onest = Onest({ subsets: ["latin", "cyrillic"], variable: "--font-onest" });
@@ -18,9 +20,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${unbounded.variable} ${onest.variable}`} suppressHydrationWarning>
       <body className="min-h-screen" suppressHydrationWarning>
         <WalletProvider>
-          <Nav />
-          <div className="pb-20 md:pb-0">{children}</div>
-          <TabBar />
+          <NftWalletProvider>
+            <RefCapture />
+            <Nav />
+            <div className="pb-20 md:pb-0">{children}</div>
+            <TabBar />
+          </NftWalletProvider>
         </WalletProvider>
       </body>
     </html>
