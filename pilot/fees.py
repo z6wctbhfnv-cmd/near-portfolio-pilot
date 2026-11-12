@@ -6,8 +6,11 @@
 - "New profit" is equity above the agent's previous peak after fees (high-water mark): no profit,
   no fee, and a loss must be recovered before fees are charged again.
 
-The pilot sends the total with `ft_transfer_call` to the NFT contract, msg {"token_id": ...};
-the contract splits it and credits the holder, the referrer and the treasury.
+A wallet pays the total with `ft_transfer_call` to the NFT contract, msg {"token_id": ...}. A NEAR
+Intents Agent API agent cannot (its withdraw and transfer calls carry no `msg`): it withdraws plain
+USDC to the NFT contract, the only destination its policy allows, and the recorder names the payer
+with `record_fee_payment`. Either way the contract splits it and credits the holder, the referrer and
+the treasury. The live ledger is backend/src/fees.ts.
 """
 from __future__ import annotations
 

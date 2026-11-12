@@ -1,6 +1,6 @@
 # Backend
 
-TypeScript on Node 24: Fastify, `node:sqlite` and the official `@near-intents-agent-api/sdk`. Start it with `npm start`; the configuration is in `../.env.example`.
+TypeScript on Node 24: Fastify, libSQL (a local SQLite file, or Turso) and the official `@near-intents-agent-api/sdk`. Start it with `npm start`; the configuration is in `../.env.example`.
 
 ## Routes
 
@@ -58,16 +58,60 @@ Each of these returns `owner_action` = the Agent API's `generate-intent` answer.
 | POST | `/v1/pilots/:id/deposit` | `{origin_asset, amount?}` → deposit address and `risk_notice` |
 | GET | `/v1/pilots/:id/balances`, `/history`, `/intents` | |
 
+### Copy fees (weekly, on new profit)
+| Method | Path | |
+|---|---|---|
+| GET | `/v1/pilots/:id/fees` | `{terms, peaks, data}`: the fee terms (holder 5% default, Pilot 0.25%, referral 0.1% of profit out of Pilot's share), the high-water mark per script NFT, and one ledger row per week |
+| POST | `/v1/pilots/:id/fees/settle` | compute (and pay) the last finished week now; idempotent. Answers `{row}` or `{skipped: reason}` |
+| POST | `/v1/fees/:id/refresh` | re-read a live fee payment's status |
+
+A ledger row's `status`: `no_profit`, `carried` (under `MIN_FEE_USD`, charged with a later week), `paper_paid`, `blocked` (with `error_code`: `fees_disabled`, `live_execution_disabled`, `fee_destination_missing`, `insufficient_balance`, `flows_unknown`, …; nothing was sent), then the Agent API's statuses for live payments. `record_status: recorded` means the NFT contract credited the split.
+
+### Author bond
+| Method | Path | |
+|---|---|---|
+| GET | `/v1/pilots/:id/copy-gate` | per script: `token_id`, `holder`, `own`, `held_usd`, `required_usd` (max of $100, 1% of copiers' capital, and the contract's figure), `open`, `reason` |
+
+### Daily health check
+| Method | Path | |
+|---|---|---|
+| GET | `/v1/pilots/:id/health` | `{latest, data}`: checks, newest first. Each has `status` (ok, warn, stop), `findings` [{check, severity, detail}] and `question` (null, or the text plus `options` `pause` / `keep`) |
+| POST | `/v1/pilots/:id/health/check` | run today's check again now |
+| POST | `/v1/health/:id/answer` | `{answer: "pause" \| "keep"}`. `pause` pauses the pilot (resume with `PATCH paused:false`); `keep` mutes the same findings for 3 days. 409 if already answered |
+
+Checks: `errors`, `refused`, `schedule`, `stale_data`, `drift` (last week replayed from the real starting position with the same WASM), `slippage` (live fills against quotes), `bond`, `fees`.
+
+### Swarm (several scripts in one wallet)
+| Method | Path | |
+|---|---|---|
+| PUT | `/v1/pilots/:id/swarm` | `{scripts: [{key, id, params, cap?, weight?}], allocation?: "equal" \| "manual" \| "calm", review_every_days?}`, 1–5 scripts; checked against the signed policy |
+| GET | `/v1/pilots/:id/swarm` | config, allocation and each sleeve's value |
+| DELETE | `/v1/pilots/:id/swarm` | back to one strategy |
+
+A swarm run's `output` has `agents` (each script's sleeve, trades and notes), `plan.crossed` (USD per asset crossed between scripts inside the wallet), `plan.dropped` (trades outside the policy) and the net `trades`.
+
+### Perps (Hyperliquid testnet)
+| Method | Path | |
+|---|---|---|
+| GET | `/v1/pilots/:id/perps` | `{enabled, network, data}`: perp orders with their `cloid` and status |
+| GET | `/v1/perps/account` | the testnet account's equity and positions (read only) |
+
+A run's `perp_orders` lists the orders that run placed.
+
 ## Scheduler
 
-Every few minutes the scheduler does four things:
+Every tick the scheduler:
 - runs pilots whose `every_hours` has passed;
 - reconciles open live swaps: it polls `correlation_id`s, and replays `retry_pending` under the same key only while `LIVE_EXECUTION=true`;
 - follows submitted owner intents to their end;
-- runs weekly reviews.
+- appends weekly NFT checkpoints (and, with `NFT_REPORT_COPIED_CAPITAL`, copiers' capital);
+- runs weekly reviews;
+- settles last week's copy fees, follows fee payments in flight, and asks the contract to credit settled ones;
+- runs the daily health check for up to 20 pilots (at most 5 drift replays per tick);
+- looks up perp orders whose answer was lost, by `cloid`.
 
-Set `SCHEDULER_ENABLED=false` to turn it off.
+Set `SCHEDULER_ENABLED=false` to turn it off. On Vercel, Cron calls `GET /v1/cron` once a day.
 
 ## Tests
 
-`npm test` runs 34 tests against in-process fakes of the Agent API, OutLayer, NEAR AI and Binance. Nothing goes over the network. `npm run smoke` makes read-only calls to the real services.
+`npm test` runs 77 tests against in-process fakes of the Agent API, OutLayer, NEAR AI, Binance, the NEAR RPC (NFT views) and Hyperliquid testnet. Nothing goes over the network. The Hyperliquid signing test uses vectors produced by Hyperliquid's official Python SDK (`test/hl-vectors.json`). `npm run smoke` makes read-only calls to the real services.

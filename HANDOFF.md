@@ -1,3 +1,57 @@
+# Handoff: backend gap work, 13 Nov 2026
+
+Six backend items from the gap list. Nothing here moved real money, sent a live request, or wrote on chain (testnet included); only testnet views were read.
+
+## Checked for real
+
+| What | How |
+|---|---|
+| Backend | `npm test`: 77 tests (44 before, all now running with the WASM built; 33 new) against fakes of the Agent API, NEAR RPC and Hyperliquid testnet |
+| NFT contract | `cargo test`: 53 tests, 11 new for `record_fee_payment` and the liabilities counter |
+| Strategies | `cargo test`: 10 tests; `npm run build:wasm` gives the same bytes as `backend/wasm/pilot-strategies.wasm` |
+| Python | `pytest`: 94 tests pass on the Mac's Python 3.9. `test_agent_llm.py` and `test_tasks.py` need Python 3.10+ and were not run |
+| Hyperliquid signing | Address, action hash and signature equal the official Python SDK's (0.24.0) on two orders, one with a builder fee (`backend/test/hl-vectors.json`) |
+| Testnet contract state | `pilot-nft2-14805.testnet` holds 0 USDC, no bonds and no fee balances, so the contract upgrade needs no migration |
+
+## The gap claims, checked
+
+1. **Fees not collected:** true. Also, the assumed route did not exist: the Agent API's withdraw and transfer calls carry no `msg`, so an agent cannot `ft_transfer_call`, and the signed policy had no destination at all. The rates follow the contract: 5% to the holder (the holder may set 0–10%, read from `copy_fee`), **0.25% to Pilot**, of which 0.1% of profit goes to a referrer. The note "0.1% Pilot" mixed up the referral share with Pilot's fee.
+2. **Bond not enforced:** mostly stale. The contract's `follow` already refuses copying below the bond. But our agents never call `follow`, nobody reported copiers' capital (so the requirement stayed at $100), and a rising requirement never stopped existing copiers. The backend now checks before every run.
+3. **No health check:** true for the backend (only `pilot/health.py` existed).
+4. **Revenue:** the 1Click app fee is blocked by the Agent API ([docs/REVENUE.md](docs/REVENUE.md)). The builder code is on testnet orders.
+5. **Perps:** "the backend understands `*-PERP` weights" was not true: only the AI drafting prompt mentioned them.
+6. **Swarm:** true; only the Python simulation had a supervisor.
+
+## How the fee is paid (live)
+
+1. When `FEE_PAYMENTS_ENABLED=true`, a new pilot's policy allows `swap` plus `withdraw`, with exactly one destination: `{withdraw, chain near, address <NFT contract>, memo null}`.
+2. Each week the ledger takes value above the peak, after the last fee, with deposits added to the peak. Below `MIN_FEE_USD`, the fee is carried to a later week.
+3. The agent previews, then withdraws USDC to the NFT contract under a stored Idempotency-Key, with the swap executor's retry and reconcile rules.
+4. Once it settles, the recorder calls `record_fee_payment` and the contract credits the split.
+5. If a week is not paid (blocked, refused, failed), the peak stays, so the profit is charged later and never twice.
+
+## Works only against fakes, needs the owner
+
+1. **Contract upgrade.** `record_fee_payment` and the liabilities counter are not deployed. Deploying is the owner's call.
+2. **Mainnet contract.** The Agent API is mainnet-only, so a live fee can only go to a mainnet NFT contract. The testnet one cannot receive it. That contract must also be storage-registered on mainnet USDC (`storage_deposit`), or the withdrawal is refused.
+3. **Recorder key.** The function-call key must also list `record_fee_payment` (and `set_copied_capital` if `NFT_REPORT_COPIED_CAPITAL` is turned on).
+4. **Owners re-sign.** Existing agents need a `policy_update` (`POST /v1/pilots/:id/policy`) to get the fee destination. **This changes what the owner signs, from "funds can never leave" to "funds can leave only to the NFT contract, as USDC, within the budget and per-asset limits".** Say so in the UI.
+5. **Hyperliquid testnet.** The code is ready behind `HL_PERPS_ENABLED`. A first real testnet order needs a funded testnet account (mock USDC) and the owner's OK. The builder fee needs `approveBuilderFee` from the main wallet first.
+
+## Limitations
+
+- Swarm pilots: no fees per sleeve, no NFT checkpoints and no drift replay yet. They run, net and book trades; the per-script record is in each run's `output.agents`.
+- The drift check replays daily closes, so with an every-few-hours script some gap is normal; it warns at 2 points and stops at 5.
+- The swarm's books are virtual and are scaled to the wallet before every run, so a live swap that settles late is booked on the next run.
+- The health check never pauses by itself; only the owner's "Pause" does. The drawdown stop and the bond gate act on their own.
+- The fee ledger values deposits at today's price; a deposit it cannot value blocks that week's fee rather than guessing.
+
+## Follow-up found on the way (not fixed)
+
+The current Agent API docs say the agent's account is its **confidential** balance: `confidential: false` is refused with `public_balance_exit_only`, and a deposit address needs `confidential` on in the policy. The backend still compiles `confidential: false`, reads balances with `source: "public"` and asks for deposits with `confidential: false`. Fix this before any live run.
+
+---
+
 # Handoff: backend + web app, 11–12 Nov 2026
 
 Branch `backend` merged with `feat/web-ui`. What works, what was checked and how, and what still needs the owner.

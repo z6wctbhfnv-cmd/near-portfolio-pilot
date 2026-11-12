@@ -19,7 +19,12 @@ Read [DISCLAIMER.md](DISCLAIMER.md) before using this with real funds.
 - [x] Strategy NFT contract on testnet: [`pilot-nft2-14805.testnet`](https://testnet.nearblocks.io/address/pilot-nft2-14805.testnet). One NFT per script, sale, copy fees, referrals. The backend appends one checkpoint per script per week (`backend/src/nft.ts`). The checkpoints already on chain are simulated (proofs_hash all zeros).
 - [x] IronClaw skill (`skill/near-portfolio-pilot/SKILL.md`) and weekly AI review (`backend/src/review.ts`)
 - [x] Web app (`web/`): rules, portfolio, strategies, safety, ask. Live mode talks to the backend: it shows the backend's policy, signs the owner intent (passkey, NEP-413 or NEP-366 wallet) and submits it.
-- [ ] Hyperliquid testnet orders (`pilot/hyperliquid.py` ready; the account needs mock USDC)
+- [x] Weekly copy fees with a high-water mark (`backend/src/fees.ts`): 5% of new profit to the NFT holder (the holder's `copy_fee`), 0.25% to Pilot, 0.1% referral out of Pilot's share. Paper pilots pay from paper USDC. Live payment (a USDC withdraw to the NFT contract, then `record_fee_payment`) is tested against fakes only, and needs a contract upgrade and a mainnet contract, see [HANDOFF.md](HANDOFF.md).
+- [x] Author bond gate (`backend/src/copying.ts`): a live pilot does not trade a copied script while the holder's bond is below max($100, 1% of copiers' capital). The contract's `follow` already checked it.
+- [x] Daily health check with a "Pause / Keep running" question (`backend/src/health.ts`)
+- [x] Swarm: one wallet follows up to 5 scripts; the main agent splits the capital, crosses conflicting trades inside the wallet and sends only the net (`backend/src/swarm.ts`)
+- [x] Hyperliquid **testnet** perps in the backend (`backend/src/perps.ts`, off by default). Signing matches Hyperliquid's official SDK; no order has been sent to testnet yet. The four WASM strategies emit no perp weights, so only a script with `*-PERP` weights uses it.
+- [ ] 1Click app fee on spot: not possible through the Agent API ([docs/REVENUE.md](docs/REVENUE.md))
 - [ ] Live run with a partner key and a small deposit
 
 ## How it fits together
