@@ -137,8 +137,14 @@ export function buildServer(app: App) {
   server.post("/v1/scripts/draft", async (req) => {
     const b = body(z.object({ idea: z.string().min(3).max(1000) }), req.body);
     if (!app.ai.configured) throw new HttpError(503, "not_configured", "NEARAI_API_KEY is not set");
-    const code = stripFences(await app.ai.chat([{ role: "system", content: SCRIPT_PROMPT }, { role: "user", content: b.idea }], { temperature: 0 }));
-    return { code, model: app.ai.model };
+    let answer: string;
+    try {
+      answer = await app.ai.chat([{ role: "system", content: SCRIPT_PROMPT }, { role: "user", content: b.idea }], { temperature: 0 });
+    } catch (e) {
+      // e.g. 402 when the NEAR AI organization has no credits; the owner can still write the script by hand.
+      throw new HttpError(503, "ai_unavailable", `NEAR AI is unavailable: ${(e as Error).message.slice(0, 200)}`);
+    }
+    return { code: stripFences(answer), model: app.ai.model };
   });
 
   server.post("/v1/strategies/:id/backtest", async (req) => {
