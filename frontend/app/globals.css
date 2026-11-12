@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
-/* RoadRadio (headings + logo) is not on any font CDN. Drop the files into public/fonts/
-   as RoadRadio-Bold.woff2 / RoadRadio-Bold.otf and they are picked up. Until then Unbounded stands in. */
+/* RoadRadio (headings + logo) is not on any font CDN and is not in the repo, so it is only used when
+   installed locally; Unbounded stands in otherwise. To ship it, add public/fonts/RoadRadio-Bold.woff2
+   and put back: url("/fonts/RoadRadio-Bold.woff2") format("woff2") in the src below. */
 @font-face {
   font-family: "RoadRadio";
   font-weight: 400 900;
   font-display: swap;
-  src: local("RoadRadio"), local("Road Radio"), local("RoadRadio-Bold"), local("Road Radio Bold"),
-       url("/fonts/RoadRadio-Bold.woff2") format("woff2");
+  src: local("RoadRadio"), local("Road Radio"), local("RoadRadio-Bold"), local("Road Radio Bold");
 }
 
 /* Layout: warm off-white page, one full-bleed orange hero, white rounded cards, soft 3D objects as the only illustrations. */

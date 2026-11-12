@@ -31,6 +31,8 @@ export type Mandate = {
   risk: string; assets: string[]; stable: string;
   budget: { daily_usd: number | null; weekly_usd: number | null; monthly_usd: number | null };
   max_trade_usd: number | null; max_actions_per_hour: number | null; owner_approval: boolean;
+  /** Sell everything to the stablecoin and pause when the portfolio falls this far below its peak. */
+  drawdown_stop?: { enabled: boolean; max_drawdown: number };
 };
 export type StrategyRef = { id: string; params: Record<string, unknown> & { weights?: Record<string, number>; every_hours?: number } };
 export type ParseResult = { mandate: Mandate; notes: string[]; warnings: string[]; source: string; strategy: StrategyRef; policy: unknown };
@@ -61,7 +63,7 @@ export const api = {
     req<{ pilot: Pilot; notes?: string[]; owner_action?: unknown }>("/v1/pilots", { json: body }),
   pilots: () => list<Pilot>(req("/v1/pilots")),
   pilot: (id: string) => req<Pilot & { pilot?: Pilot }>(`/v1/pilots/${id}`).then((r) => (r.pilot ?? r) as Pilot),
-  patchPilot: (id: string, body: { name?: string; paused?: boolean; review_auto_apply?: boolean }) => req<unknown>(`/v1/pilots/${id}`, { method: "PATCH", json: body }),
+  patchPilot: (id: string, body: { name?: string; paused?: boolean; review_auto_apply?: boolean; drawdown_stop?: { enabled?: boolean; max_drawdown?: number } }) => req<unknown>(`/v1/pilots/${id}`, { method: "PATCH", json: body }),
   setStrategy: (id: string, s: StrategyRef) => req<unknown>(`/v1/pilots/${id}/strategy`, { method: "PUT", json: s }),
   portfolio: (id: string) => req<Portfolio>(`/v1/pilots/${id}/portfolio`),
   run: (id: string) => req<Run>(`/v1/pilots/${id}/run`, { method: "POST", json: {} }),

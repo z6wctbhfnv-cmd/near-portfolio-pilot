@@ -179,15 +179,29 @@ function question() {
   const g = new THREE.Group();
   const body = new THREE.Mesh(ext(roundRect(1.6, 1.6, 0.8), 0.3, 0.16), mat(ORANGE));
   g.add(body);
-  const q = new THREE.Shape();
-  q.absarc(0, 0.22, 0.32, Math.PI * 1.05, -0.25, true);
-  q.absarc(0.08, -0.12, 0.12, 0.6, Math.PI * 1.1, false);
-  q.lineTo(-0.1, -0.28); q.lineTo(0.08, -0.28); q.lineTo(0.12, -0.1);
-  q.absarc(0.0, 0.22, 0.17, -0.5, Math.PI * 1.05, false);
-  q.closePath();
-  const qm = new THREE.Mesh(ext(q, 0.08, 0.05), mat(WHITE, 0.2)); qm.position.set(0, 0.12, 0.28);
-  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.1, 32, 32), mat(WHITE, 0.2)); dot.scale.z = 0.6; dot.position.set(0, -0.42, 0.3);
-  g.add(qm, dot);
+  // The mark is one rounded stroke (a tube along a smooth path), so it cannot self-intersect the way
+  // an extruded outline does: the hook arcs clockwise from the upper left and bends into the stem.
+  const pts: THREE.Vector3[] = [];
+  const cx = 0, cy = 0.2, r = 0.29;
+  for (let i = 0; i <= 40; i++) {
+    const a = deg(160 - (i / 40) * 210); // 160° -> -50°
+    pts.push(new THREE.Vector3(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 0));
+  }
+  const end = pts[pts.length - 1]!;
+  for (let i = 1; i <= 12; i++) {
+    const t = i / 12; // ease from the arc's end into a straight vertical stem at x = 0
+    const x = end.x * (1 - t) ** 2, y = end.y + (-0.17 - end.y) * t;
+    pts.push(new THREE.Vector3(x, y, 0));
+  }
+  pts.push(new THREE.Vector3(0, -0.24, 0));
+  const path = new THREE.CatmullRomCurve3(pts, false, "centripetal");
+  const R = 0.085, white = mat(WHITE, 0.2), z = 0.36;
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(path, 240, R, 40, false), white);
+  const capA = new THREE.Mesh(new THREE.SphereGeometry(R, 40, 40), white); capA.position.copy(pts[0]!);
+  const capB = new THREE.Mesh(new THREE.SphereGeometry(R, 40, 40), white); capB.position.copy(pts[pts.length - 1]!);
+  const mark = new THREE.Group(); mark.add(tube, capA, capB); mark.position.set(0, 0.08, z); mark.scale.z = 0.7;
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.105, 40, 40), white); dot.scale.z = 0.7; dot.position.set(0, -0.44, z);
+  g.add(mark, dot);
   return g;
 }
 

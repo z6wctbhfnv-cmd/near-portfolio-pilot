@@ -13,12 +13,12 @@ export default function Dashboard() {
   const [open, setOpen] = useState<Move | null>(null);
   const [tab, setTab] = useState<"assets" | "mix">("assets");
   const { accountId, connect } = useWallet();
-  const { view, error, busy, runNow, togglePause, reviewNow } = usePilot();
+  const { view, error, busy, runNow, togglePause, reviewNow, toggleStop } = usePilot();
   const { pilot, total, holdings, moves, series, reviews, paused, live } = view;
   const m = pilot?.mandate;
   const rules = m
-    ? [m.budget.weekly_usd && `Max $${m.budget.weekly_usd} a week`, m.budget.daily_usd && `Max $${m.budget.daily_usd} a day`, m.max_trade_usd && `Trades up to $${m.max_trade_usd}`, `${[...m.assets, m.stable].join(", ")} only`, "Your wallet only", "Freeze any time"].filter(Boolean) as string[]
-    : ["Max $150 a week", "NEAR at 30% ± 4", "Act past 5% drift", "Your wallet only", "Sunday check-in", "Freeze any time"];
+    ? [m.budget.weekly_usd && `Max $${m.budget.weekly_usd} a week`, m.budget.daily_usd && `Max $${m.budget.daily_usd} a day`, m.max_trade_usd && `Trades up to $${m.max_trade_usd}`, `${[...m.assets, m.stable].join(", ")} only`, m.drawdown_stop?.enabled === false ? "No safety stop" : `Cash out at −${Math.round((m.drawdown_stop?.max_drawdown ?? 0.2) * 100)}%`, "Your wallet only", "Freeze any time"].filter(Boolean) as string[]
+    : ["Max $150 a week", "NEAR at 30% ± 4", "Act past 5% drift", "Cash out at −20%", "Your wallet only", "Freeze any time"];
   const review = reviews[0];
 
   return (
@@ -130,7 +130,7 @@ export default function Dashboard() {
           <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.32 }} className="card p-6">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-[14px] text-dim">Your signed rules</p>
+                <p className="text-[14px] text-dim">{pilot?.mode === "live" ? "Your signed rules" : "Your rules"}</p>
                 <p className="display mt-2 text-[24px]">{rules.length} rules · all kept</p>
               </div>
               <img src="/3d/shield.png" alt="" className="h-16 w-16" />
@@ -141,6 +141,12 @@ export default function Dashboard() {
                   className="rounded-full bg-card2 px-3 py-1.5 text-[14px] font-medium">{r}</motion.span>
               ))}
             </div>
+            {live && m && (
+              <button type="button" onClick={toggleStop} disabled={busy === "stop"}
+                className="mt-4 text-[15px] font-semibold text-yel disabled:opacity-50">
+                {m.drawdown_stop?.enabled === false ? "Turn the safety stop on" : "Turn the safety stop off"}
+              </button>
+            )}
           </motion.div>
 
           <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.38 }} className="card p-6">

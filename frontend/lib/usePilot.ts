@@ -141,5 +141,6 @@ export function usePilot() {
     runNow: () => id && act("run", () => api.run(id)),
     togglePause: () => id && act("pause", () => api.patchPilot(id, { paused: !view.paused })),
     reviewNow: () => id && act("review", () => api.review(id)),
+    toggleStop: () => id && act("stop", () => api.patchPilot(id, { drawdown_stop: { enabled: !(view.pilot?.mandate.drawdown_stop?.enabled ?? true) } })),
   };
 }
