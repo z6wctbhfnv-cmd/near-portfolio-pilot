@@ -1,6 +1,6 @@
-# Handoff: backend, 11–12 Nov 2026
+# Handoff: backend + web app, 11–12 Nov 2026
 
-Branch `backend`. What works, what was checked and how, and what still needs the owner.
+Branch `backend` merged with `feat/web-ui`. What works, what was checked and how, and what still needs the owner.
 
 ## Checked for real
 
@@ -37,10 +37,12 @@ Backtests on real daily closes (Binance), 10 Nov 2024 → 10 Nov 2026, starting 
    - So: build with `npm run build:wasm`, put the file on any **public HTTPS** address, and create the project version with the OutLayer CLI or dashboard.
    - The version's hash then equals the `wasm_sha256` the backend records with every run and on the NFT. Keep that exact build file; a rebuild on another machine may give different bytes.
    - The repository is private, so the NFT's `source_url` (`…/tree/main/strategies`) is not publicly verifiable, and it only resolves once `backend` is merged into `main`. Verifiable history needs a public repo or a public mirror of `strategies/`.
-4. **Strategy NFT.**
-   - The contract is not deployed. The deploy commands are in `contracts/strategy-nft/README.md`; it locks about 3.3 NEAR of storage.
-   - The publisher needs a **full-access** key, because `record_run` attaches a storage deposit. Use a dedicated account holding a small amount of NEAR and add it with `add_recorder`.
-   - Publishing was not run on-chain.
+4. **Strategy NFT (testnet).**
+   - The backend uses the contract already deployed from `feat/web-ui`: `pilot-nft2-14805.testnet`. The older `record_run` contract from `backend` is gone.
+   - A script's identity is `sha256("<wasm_sha256>:<strategy_id>")`. Four NFTs were minted for the WASM strategies by `pilot-author-10734.testnet`: `wasm-rebalance@v1`, `wasm-trend@v1`, `wasm-vol-target@v1`, `wasm-dca@v1`, for WASM `ccd95701…6795a`.
+   - The recorder key is a function-call key on `pilot-nft2-14805.testnet` limited to `append_checkpoint` (0.25 NEAR gas allowance). It lives in the local `.env` only.
+   - The backend appends one checkpoint per script per week. Nothing was appended yet: a checkpoint needs a full week of runs.
+   - The WASM build is now reproducible: `npm run build:wasm` strips machine paths, and a build in another directory gave the same sha256. If `strategies/` changes, the hash changes, and the holder must call `update_script` with the new hash.
 5. **NEAR AI.** No key, so the rule-based fallbacks ran. The default model `deepseek/deepseek-v3.2` is confirmed to be in NEAR AI's live model list.
 
 ## Limitations
@@ -49,12 +51,11 @@ Backtests on real daily closes (Binance), 10 Nov 2024 → 10 Nov 2026, starting 
 - Live runs use daily closes plus the current price as the latest point. Paper fills use catalogue prices minus `PAPER_COST_BPS`, not real quotes (a paper pilot has no agent to quote against).
 - One process with SQLite (`data/`). For more than one instance, the database and the scheduler need a lock.
 - `NEAR_INTENTS_PARTNER_KEY` from the template is not used yet.
-- `DISCLAIMER.md` mentions "the license in this repository", but there is no LICENSE file. That choice is the owner's.
-- Web UI: not done.
+- Licenses: MIT for `strategies/` and `contracts/`, Apache-2.0 for the rest.
+- Web UI: live mode needs `apiBase` in `web/js/config.js` and the owner on `CONFIG.allowlist` (and on `LIVE_OWNERS` in the backend). It shows the backend's compiled policy before signing. Custom limits added on the Rules page are not part of the signed Agent API policy.
+- No per-owner authentication on the backend: anyone who reaches it can read and change any pilot. Before a public deployment, set `CORS_ORIGINS` and `LIVE_OWNERS`, and keep paper pilots for the demo.
 
 ## Toolchain on this Mac
 
-- Node 24.22.3 via nvm (the SDK needs Node 24+).
-- The `wasm32-wasip1` and `wasm32-unknown-unknown` targets on the default nightly.
-- Rust 1.86.0 for the contract; cargo-near 0.22.0 is in `~/.cargo/bin`.
-- rustup updated itself to 1.29.3 during these installs.
+- Node 25 from Homebrew (the SDK needs Node 24+).
+- Rust 1.95.0 pinned in `strategies/` (wasm32-wasip1) and in the contract; near-cli-rs 0.31.1.

@@ -30,7 +30,6 @@ export type RunnerDeps = {
 };
 
 /** One strategy NFT per pilot listing: the strategy id plus the pilot's short id. */
-export const nftTokenId = (p: { id: string; strategy: { id: string } }) => `${p.strategy.id}-${p.id.slice(0, 8)}`;
 
 export type Holdings = Record<string, number>;
 
@@ -198,40 +197,14 @@ export class Runner {
     return this.getRun(runId);
   }
 
-  /** Appends the run to the strategy NFT's on-chain history, when a publisher is configured. */
-  private async publish(runId: string, p: Pilot, startedAt: number) {
+  /**
+   * Marks the run for the strategy NFT. Runs are not written one by one: once a week the scheduler
+   * appends one checkpoint per script (see nft.ts, publishCheckpoints).
+   */
+  private async publish(runId: string, _p: Pilot, _startedAt: number) {
     const run = this.getRun(runId)!;
-    if (!this.d.nft.configured || !run.wasm_sha256) {
-      this.d.db.prepare("UPDATE runs SET nft_status = 'unpublished' WHERE id = ?").run(runId);
-      return;
-    }
-    const prev = this.d.db
-      .prepare("SELECT total_usd FROM snapshots WHERE pilot_id = ? AND ts < ? ORDER BY ts DESC LIMIT 1")
-      .get(p.id, startedAt) as { total_usd: number } | undefined;
-    const ret = prev && prev.total_usd > 0 && run.total_usd !== null ? run.total_usd / prev.total_usd - 1 : 0;
-    const tokenId = nftTokenId(p);
-    const out = run.output as { engine_version?: string } | null;
-    await this.d.nft.prepareToken(tokenId, `${p.strategy.id} · ${p.name}`.slice(0, 120), {
-      strategy_id: p.strategy.id,
-      // Engine version plus code hash: a rebuild with new code is a new version label on-chain.
-      version: `${out?.engine_version ?? "0.0.0"}+${run.wasm_sha256.slice(0, 12)}`,
-      wasm_sha256: run.wasm_sha256,
-      source_url: "https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot/tree/main/strategies",
-      outlayer_project: this.d.outlayer.configured ? (this.d.outlayerProject ?? null) : null,
-      params_json: JSON.stringify(p.strategy.params).slice(0, 4000),
-    });
-    const tx = await this.d.nft.recordRun(tokenId, {
-      run_id: runId,
-      timestamp_ms: startedAt,
-      engine: run.engine,
-      input_sha256: run.input_sha256!,
-      output_sha256: run.output_sha256!,
-      attestation_ref: (run.attestation as { call_id?: string } | null)?.call_id ?? null,
-      wasm_sha256: run.wasm_sha256,
-      period_return_bps: Math.round(ret * 10_000),
-      equity_usd_e6: Math.round((run.total_usd ?? 0) * 1e6),
-    });
-    this.d.db.prepare("UPDATE runs SET nft_status = 'published', nft_tx = ? WHERE id = ?").run(tx, runId);
+    const status = this.d.nft.configured && run.wasm_sha256 ? "queued" : "unpublished";
+    this.d.db.prepare("UPDATE runs SET nft_status = ? WHERE id = ?").run(status, runId);
   }
 
   /**

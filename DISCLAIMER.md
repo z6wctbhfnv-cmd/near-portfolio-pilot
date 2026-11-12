@@ -30,7 +30,7 @@
 - sanctions compliance;
 - your taxes.
 
-**As is.** The software is provided "as is", without warranty of any kind, under the license in this repository. To the maximum extent the law allows, the authors are not liable for any loss.
+**As is.** The software is provided "as is", without warranty of any kind, under the licenses in this repository: MIT for `strategies/` and `contracts/` (see the `LICENSE` file in each), Apache-2.0 for everything else (`LICENSE` at the root). To the maximum extent the law allows, the authors are not liable for any loss.
 
 ## Русский
 

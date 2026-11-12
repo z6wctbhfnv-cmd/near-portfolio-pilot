@@ -14,6 +14,7 @@ Every response is JSON. Errors look like `{ "error": { "code", "message", ... } 
 | GET | `/v1/network` | Agent API dependency status |
 | GET | `/v1/universe` | managed assets with live price and decimals |
 | GET | `/v1/strategies` | catalogue with JSON Schema for each strategy's parameters |
+| POST | `/v1/scripts/draft` | `{idea}` → `{code, model}`: a user script drafted by NEAR AI (503 without `NEARAI_API_KEY`); the web app checks it, nothing runs it here |
 | POST | `/v1/strategies/:id/backtest` | `{params, days?, to?, initial_usd?, cost_bps?}` → metrics, buy-and-hold benchmark, equity curve |
 
 ### Rules
@@ -35,7 +36,7 @@ Every response is JSON. Errors look like `{ "error": { "code", "message", ... } 
 | GET | `/v1/pilots/:id/executions` | swaps; `blocked` and `refused` carry `error_code` |
 | POST | `/v1/executions/:id/refresh` | re-read one swap's status |
 | GET | `/v1/pilots/:id/snapshots`, `/events` | value history, log |
-| GET | `/v1/pilots/:id/nft` | strategy NFT token id, the on-chain history if configured, and local run records |
+| GET | `/v1/pilots/:id/nft` | the script's `code_hash`, its NFT (found by hash), the weekly on-chain record, and local run records |
 
 ### Reviews
 | Method | Path | |

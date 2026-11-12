@@ -1,7 +1,4 @@
-# nearcore (protocol < 84) rejects wasm features emitted by rustc > 1.86,
-# and cargo-near 0.22 refuses to build this near-sdk version with newer rustc.
-# Native unit tests also pass on this toolchain.
 [toolchain]
-channel = "1.86.0"
-profile = "minimal"
+# near-sdk 5.30 needs rustc >= 1.95. Scoped to this contract; the machine's default toolchain is untouched.
+channel = "1.95.0"
 targets = ["wasm32-unknown-unknown"]

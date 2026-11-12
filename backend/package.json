@@ -8,7 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build:wasm": "cd ../strategies && cargo build --release --target wasm32-wasip1",
+    "build:wasm": "cd ../strategies && RUSTFLAGS=\"--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$(rustc --print sysroot)=/rustc --remap-path-prefix=$PWD=/src\" cargo build --release --locked --target wasm32-wasip1",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "backtest": "tsx src/cli/backtest.ts",
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "@fastify/cors": "^11.4.1",
     "@near-intents-agent-api/sdk": "^0.8.2",

@@ -10,7 +10,7 @@ import { backtest } from "./backtest.js";
 import { describeConfig } from "./config.js";
 import { json, parse } from "./db.js";
 import { compilePolicy, type Mandate, MandateSchema, parseMandate, strategyForMandate } from "./mandate.js";
-import { nftTokenId } from "./runner.js";
+import { scriptCodeHash } from "./nft.js";
 import { catalog, isStrategyId, parseStrategyParams, STRATEGY_IDS, type StrategyId } from "./strategies.js";
 import { DEFAULT_UNIVERSE, universeBySymbol } from "./tokens.js";
 
@@ -18,6 +18,23 @@ const DAY = 86_400_000;
 export const RISK_NOTICE =
   "The Agent API is an experimental, mainnet-only beta. You and your users may lose all assets used with it, or lose access to them. It is operated by NEAR Technologies Limited. NEAR Portfolio Pilot is an unaudited hackathon prototype; read DISCLAIMER.md.";
 const PUBLIC = new Set(["/health", "/v1/config"]);
+
+const SCRIPT_PROMPT = `You write trading scripts for Pilot. Output ONLY Python code, no prose, no markdown fences.
+Exactly one function: def target(daily):
+- daily is a pandas DataFrame of daily closes, columns BTC, ETH, SOL, NEAR, XAUT, plus funding columns
+  "BTC-FUND", "ETH-FUND", "SOL-FUND", "NEAR-FUND" (funding a long paid that day). Rows end today.
+- Return a dict of weights. Spot keys: BTC, ETH, SOL, NEAR, USDC (>= 0, spot + USDC = 1).
+  Perp keys: BTC-PERP, ETH-PERP, SOL-PERP, NEAR-PERP (signed, negative = short, |w| <= 1).
+- Use only \`np\`, \`math\`, built-ins like min/max/len/sum/abs. No imports, no files, no lambda, no classes.
+- Deterministic. Handle short history (return {"USDC": 1.0}).`;
+
+const stripFences = (t: string) => (t.match(/```(?:python)?\n([\s\S]*?)```/)?.[1] ?? t).trim() + "\n";
+
+/** The id an owner is known by: NEAR account, EVM address or passkey credential id. */
+const ownerKey = (o: unknown) => {
+  const x = o as { type?: string; account_id?: string; address?: string; credential_id?: string } | undefined;
+  return (x?.type === "near" ? x.account_id : x?.type === "evm" ? x.address?.toLowerCase() : x?.credential_id) ?? "";
+};
 
 class HttpError extends Error {
   constructor(
@@ -63,7 +80,9 @@ function body<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
 
 export function buildServer(app: App) {
   const server = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { level: "info" }, bodyLimit: 1_000_000 });
-  void server.register(cors, { origin: true });
+  // Browsers may call from CORS_ORIGINS only (comma-separated); unset = any origin (local development).
+  const origins = app.cfg.CORS_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean);
+  void server.register(cors, { origin: origins?.length ? origins : true });
 
   server.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
     const token = app.cfg.PILOT_API_TOKEN;
@@ -112,6 +131,15 @@ export function buildServer(app: App) {
     return { data: u.map((a) => ({ symbol: a.symbol, asset_id: a.asset_id, stable: a.stable, decimals: a.token?.decimals ?? null, price: a.price, listed: Boolean(a.token) })) };
   });
   server.get("/v1/strategies", async () => ({ data: catalog() }));
+
+  // A user script drafted by NEAR AI from the owner's idea. The model only drafts: the web app
+  // checks the code and the owner backtests it before anything is minted. Nothing here runs it.
+  server.post("/v1/scripts/draft", async (req) => {
+    const b = body(z.object({ idea: z.string().min(3).max(1000) }), req.body);
+    if (!app.ai.configured) throw new HttpError(503, "not_configured", "NEARAI_API_KEY is not set");
+    const code = stripFences(await app.ai.chat([{ role: "system", content: SCRIPT_PROMPT }, { role: "user", content: b.idea }], { temperature: 0 }));
+    return { code, model: app.ai.model };
+  });
 
   server.post("/v1/strategies/:id/backtest", async (req) => {
     const { id } = req.params as { id: string };
@@ -200,6 +228,10 @@ export function buildServer(app: App) {
     }
 
     // Live: compile the policy and prepare agent_create for the owner's wallet.
+    const allow = app.cfg.LIVE_OWNERS?.split(",").map((o) => o.trim()).filter(Boolean);
+    if (allow?.length && !allow.includes(ownerKey(b.owner))) {
+      throw new HttpError(403, "owner_not_allowed", "live pilots are open by invitation: this owner is not on LIVE_OWNERS");
+    }
     app.gateway.api(); // fails fast (503 not_configured) before anything is stored
     const tokens = await app.catalog.all();
     const { policy, warnings } = compilePolicy(mandate, tokens);
@@ -428,13 +460,15 @@ export function buildServer(app: App) {
 
   server.get("/v1/pilots/:id/nft", async (req) => {
     const p = pilotOr404((req.params as { id: string }).id);
-    const tokenId = nftTokenId(p);
     const local = app.db
       .prepare("SELECT id, started_at, engine, input_sha256, output_sha256, wasm_sha256, total_usd, nft_status, nft_tx FROM runs WHERE pilot_id = ? ORDER BY started_at DESC LIMIT 100")
-      .all(p.id);
-    if (!app.nft.contract) return { token_id: tokenId, contract: null, on_chain: null, local_runs: local };
-    const onChain = await app.nft.history(tokenId).catch((e: Error) => ({ error: e.message }));
-    return { token_id: tokenId, contract: app.nft.contract, on_chain: onChain, local_runs: local };
+      .all(p.id) as Array<{ wasm_sha256: string | null }>;
+    const wasm = local.find((r) => r.wasm_sha256)?.wasm_sha256 ?? null;
+    const codeHash = wasm ? scriptCodeHash(wasm, p.strategy.id) : null;
+    if (!app.nft.contract || !codeHash) return { code_hash: codeHash, token_id: null, contract: app.nft.contract, on_chain: null, local_runs: local };
+    const tokenId = await app.nft.tokenByCodeHash(codeHash).catch(() => null);
+    const onChain = tokenId ? await app.nft.history(tokenId).catch((e: Error) => ({ error: e.message })) : null;
+    return { code_hash: codeHash, token_id: tokenId, contract: app.nft.contract, on_chain: onChain, local_runs: local };
   });
 
   return server;

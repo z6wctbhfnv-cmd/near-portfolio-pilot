@@ -1,28 +1,19 @@
 [package]
 name = "strategy-nft"
-description = "NEAR Portfolio Pilot: strategy NFTs that carry their verified run history on-chain"
 version = "0.1.0"
 edition = "2021"
-# near-sdk 5.27.x is the newest line whose MSRV (1.86) still allows a stable
-# 1.86 toolchain for wasm builds; 5.28+ needs 1.93, 5.30 needs 1.95.
-rust-version = "1.86"
 license = "MIT"
-publish = false
-
-# Standalone crate: keeps Cargo.lock and target/ inside this folder even if the
-# repo root later gets its own workspace.
-[workspace]
-resolver = "3"
+description = "NEP-171 strategy NFTs with an append-only, verifiable performance record"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-near-sdk = "=5.27.0"
-near-contract-standards = "=5.27.0"
+near-sdk = "5.5"
+near-contract-standards = "5.5"
 
 [dev-dependencies]
-near-sdk = { version = "=5.27.0", features = ["unit-testing"] }
+near-sdk = { version = "5.5", features = ["unit-testing"] }
 
 [profile.release]
 codegen-units = 1

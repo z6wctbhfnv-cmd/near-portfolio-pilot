@@ -6,7 +6,7 @@ import { type Db, logEvent, openDb } from "./db.js";
 import { Executor } from "./executor.js";
 import { PriceHistory } from "./history.js";
 import { NearAiClient } from "./nearai.js";
-import { NftPublisher } from "./nft.js";
+import { NftPublisher, publishCheckpoints } from "./nft.js";
 import { OutLayerClient } from "./outlayer.js";
 import { Pilots } from "./pilots.js";
 import { Reviewer } from "./review.js";
@@ -86,6 +86,7 @@ export function startScheduler(app: App, everyMs = 60_000) {
         await app.executor.reconcile().catch((e) => logEvent(app.db, null, "error", `reconcile: ${(e as Error).message}`));
         await syncOwnerIntents(app).catch((e) => logEvent(app.db, null, "error", `intent sync: ${(e as Error).message}`));
       }
+      await publishCheckpoints(app.db, app.nft).catch((e) => logEvent(app.db, null, "error", `nft checkpoints: ${(e as Error).message}`));
       for (const p of app.pilots.dueReviews()) {
         await app.reviewer.review(p.id).catch((e) => logEvent(app.db, p.id, "error", `review: ${(e as Error).message}`));
       }

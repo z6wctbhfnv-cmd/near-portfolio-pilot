@@ -37,6 +37,10 @@ const schema = z.object({
   PORT: z.coerce.number().int().default(8787),
   HOST: z.string().default("127.0.0.1"),
   PILOT_API_TOKEN: optional,
+  /** Comma-separated browser origins allowed to call the API, e.g. https://pilot.example.com. */
+  CORS_ORIGINS: optional,
+  /** Comma-separated owners (NEAR account, EVM address, passkey credential id) allowed to create live pilots. */
+  LIVE_OWNERS: optional,
   PILOT_MASTER_KEY: optional,
   DATABASE_PATH: z.string().default(resolve(REPO_ROOT, "data/pilot.sqlite")),
 
@@ -98,5 +102,6 @@ export function describeConfig(c: Config) {
     nft: { contract: c.STRATEGY_NFT_CONTRACT ?? null, publisher: c.NEAR_ACCOUNT_ID ?? null, can_publish: Boolean(c.STRATEGY_NFT_CONTRACT && c.NEAR_ACCOUNT_ID && c.NEAR_PRIVATE_KEY) },
     scheduler: { enabled: c.SCHEDULER_ENABLED, tick_minutes: c.TICK_MINUTES, review_every_days: c.REVIEW_EVERY_DAYS },
     api_token_required: Boolean(c.PILOT_API_TOKEN),
+    live_owners_restricted: Boolean(c.LIVE_OWNERS),
   };
 }

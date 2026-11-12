@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS runs (
   status TEXT NOT NULL,               -- ok | error | skipped
   error TEXT,
   total_usd REAL,
-  nft_status TEXT,                    -- unpublished | published | failed
+  nft_status TEXT,                    -- unpublished | queued | published (in a weekly checkpoint)
   nft_tx TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_pilot ON runs(pilot_id, started_at);
@@ -122,6 +122,15 @@ CREATE TABLE IF NOT EXISTS price_history (
   day INTEGER NOT NULL,               -- unix ms at 00:00 UTC
   close REAL NOT NULL,
   PRIMARY KEY (symbol, day)
+);
+
+-- Strategy NFT checkpoints already appended (or found on chain), one per script and period.
+CREATE TABLE IF NOT EXISTS nft_checkpoints (
+  code_hash TEXT NOT NULL,
+  period_end_ms INTEGER NOT NULL,
+  token_id TEXT NOT NULL,
+  tx TEXT,
+  PRIMARY KEY (code_hash, period_end_ms)
 );
 
 CREATE TABLE IF NOT EXISTS events (

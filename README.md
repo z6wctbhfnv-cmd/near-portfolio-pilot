@@ -13,12 +13,14 @@ Read [DISCLAIMER.md](DISCLAIMER.md) before using this with real funds.
 
 ## Status
 
-- [x] Strategy scripts and simulation on historical data (`strategies/`, `backend/src/backtest.ts`)
-- [x] Agent API integration: policy, owner intents, grants, swaps, dry quotes (`backend/src/agent.ts`, `executor.ts`). Tested against a fake API. Live calls need a partner key, see [HANDOFF.md](HANDOFF.md).
-- [x] OutLayer strategy runner (`backend/src/outlayer.ts`). Tested against a fake. The project is not deployed on OutLayer yet (it needs the built `.wasm` at a public HTTPS address, see HANDOFF).
-- [x] Strategy NFT contract, NEP-171 (`contracts/strategy-nft/`). Unit-tested; not deployed.
+- [x] Strategy scripts and simulation on historical data (`strategies/`, `backend/src/backtest.ts`; research simulation in `pilot/` and `sim/`)
+- [x] Agent API integration: policy, owner intents, grants, swaps, dry quotes (`backend/src/agent.ts`, `executor.ts`). Tested against a fake API; live calls need a partner key, see [HANDOFF.md](HANDOFF.md).
+- [x] OutLayer strategy runner (`backend/src/outlayer.ts`). Tested against a fake; the project is not registered on OutLayer yet.
+- [x] Strategy NFT contract on testnet: [`pilot-nft2-14805.testnet`](https://testnet.nearblocks.io/address/pilot-nft2-14805.testnet). One NFT per script, sale, copy fees, referrals. The backend appends one checkpoint per script per week (`backend/src/nft.ts`). The checkpoints already on chain are simulated (proofs_hash all zeros).
 - [x] IronClaw skill (`skill/near-portfolio-pilot/SKILL.md`) and weekly AI review (`backend/src/review.ts`)
-- [ ] Web UI and demo
+- [x] Web app (`web/`): rules, portfolio, strategies, safety, ask. Live mode talks to the backend: it shows the backend's policy, signs the owner intent (passkey, NEP-413 or NEP-366 wallet) and submits it.
+- [ ] Hyperliquid testnet orders (`pilot/hyperliquid.py` ready; the account needs mock USDC)
+- [ ] Live run with a partner key and a small deposit
 
 ## How it fits together
 
@@ -54,7 +56,7 @@ Read [DISCLAIMER.md](DISCLAIMER.md) before using this with real funds.
 
 ## Run it
 
-Needs Node 24+ (`.nvmrc`) and Rust with the `wasm32-wasip1` target.
+Needs Node 24+ (`.nvmrc`) and rustup; `strategies/rust-toolchain.toml` installs Rust 1.95.0 with the `wasm32-wasip1` target.
 
 ```bash
 cp .env.example .env            # every key is optional; none = paper mode on public data
@@ -62,7 +64,7 @@ cd backend
 npm install
 npm run build:wasm              # builds strategies/ to WASM
 npm run fetch-history           # ~3 years of daily closes (Binance public data) into data/
-npm test                        # 34 tests, no network
+npm test                        # backend tests, no network
 npm run smoke                   # read-only checks against the real services
 npm run backtest -- trend '{"weights":{"NEAR":0.2,"BTC":0.2,"ETH":0.2}}' 730
 npm start                       # API on http://127.0.0.1:8787
@@ -82,7 +84,14 @@ The full route list is in [backend/README.md](backend/README.md).
 
 | Path | What |
 |---|---|
-| `strategies/` | Rust strategies (rebalance, trend, vol_target, dca) → WASI module for OutLayer and local runs |
-| `backend/` | TypeScript service: API, scheduler, Agent API gateway, executor, backtester, AI review |
-| `contracts/strategy-nft/` | NEP-171 strategy NFTs with on-chain run history |
+| `strategies/` | Rust strategies (rebalance, trend, vol_target, dca) → WASI module for OutLayer and local runs. Pinned toolchain; `npm run build:wasm` gives the same sha256 on any machine |
+| `backend/` | TypeScript service: API, scheduler, Agent API gateway, executor, backtester, AI review, NFT checkpoints |
+| `web/` | Static web app (no build step). Simulation mode by default; live when `web/js/config.js` sets `apiBase` |
+| `contracts/strategy-nft/` | NEP-171 strategy NFTs: one per script, append-only weekly record, sale and copy fees |
+| `pilot/`, `sim/` | Python research code: simulation on hourly history, perps, fee model, script checker |
 | `skill/near-portfolio-pilot/` | IronClaw skill that drives the backend |
+| `docs/` | Key setup, simulation findings, demo script |
+
+## License
+
+MIT for `strategies/` and `contracts/` (their own `LICENSE` files), Apache-2.0 for everything else ([LICENSE](LICENSE)).

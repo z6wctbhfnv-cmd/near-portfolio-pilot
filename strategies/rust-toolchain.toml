@@ -1,0 +1,5 @@
+[toolchain]
+# Pinned so the published WASM (and its sha256, recorded on the strategy NFT) can be rebuilt byte for byte.
+channel = "1.95.0"
+targets = ["wasm32-wasip1"]
+profile = "minimal"
