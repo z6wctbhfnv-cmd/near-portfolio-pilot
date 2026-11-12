@@ -216,10 +216,11 @@ export async function parseMandate(text: string, ai?: NearAiClient) {
       { role: "user", content: text.slice(0, 4000) },
     ]);
     // The AI overrides only the fields it actually stated; everything else comes from the rules.
+    // Models often write null for "not stated" instead of omitting the field, so null counts as unstated.
     const known = Object.keys(MandateSchema.shape);
     const stated =
       answer && typeof answer === "object" && !Array.isArray(answer)
-        ? Object.fromEntries(Object.entries(answer as Record<string, unknown>).filter(([k, v]) => known.includes(k) && v !== undefined))
+        ? Object.fromEntries(Object.entries(answer as Record<string, unknown>).filter(([k, v]) => known.includes(k) && v !== undefined && v !== null))
         : {};
     if (!Object.keys(stated).length) {
       return { ...rules, source: "rules" as const, notes: [...rules.notes, "AI answer rejected: no mandate fields"] };

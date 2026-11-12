@@ -110,3 +110,18 @@ describe("secret box", () => {
     expect(() => new SecretBox("k2").open(sealed)).toThrow();
   });
 });
+
+describe("AI mandate parsing", () => {
+  it("treats null fields from the model as not stated", async () => {
+    const { parseMandate } = await import("../src/mandate.js");
+    const { mandate: rules } = parseMandateRules("Careful: NEAR and BTC, max $300 a day, $50 per trade");
+    const ai = {
+      configured: true,
+      model: "fake",
+      chatJson: async () => ({ ...rules, max_trade_usd: null, drawdown_stop: null, risk: "low" }),
+    };
+    const r = await parseMandate("Careful: NEAR and BTC, max $300 a day, $50 per trade", ai as never);
+    expect(r.source).toBe("ai");
+    expect(r.mandate.max_trade_usd).toBe(50);
+  });
+});
