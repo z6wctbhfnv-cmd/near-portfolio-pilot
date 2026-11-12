@@ -13,7 +13,7 @@
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { type Db, json, logEvent } from "./db.js";
-import { type HyperliquidTestnet, type OrderWire, slippagePrice, floatToWire } from "./hyperliquid.js";
+import { floatToWire, type HyperliquidTestnet, nextNonce, type OrderWire, slippagePrice } from "./hyperliquid.js";
 
 export const PERP_COINS = ["BTC", "ETH", "SOL", "NEAR"];
 export const PERP_SUFFIX = "-PERP";
@@ -116,7 +116,7 @@ export class PerpExecutor {
       }
       const isBuy = delta > 0;
       const wire: OrderWire = { a: asset, b: isBuy, p: floatToWire(slippagePrice(mid, isBuy, this.d.slippage, szDecimals)), s: floatToWire(size), r: reducing, t: { limit: { tif: "Ioc" } }, c: cloid };
-      const nonce = Date.now();
+      const nonce = nextNonce();
       // The cloid and the exact request are stored BEFORE sending.
       await this.insert({ ...base, usd: Number(delta.toFixed(2)), request_json: json({ action: this.d.hl.orderAction(wire), nonce, mid })!, status: "prepared", error_code: null, error: null });
       if (!this.d.hl.canTrade) {

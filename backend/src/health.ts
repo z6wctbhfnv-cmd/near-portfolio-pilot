@@ -65,6 +65,8 @@ export type HealthDeps = {
   wasm: StrategyWasm;
   nft: NftPublisher;
   costBps: number;
+  /** The run gate's mode (config BOND_GATE): a short bond is a "stop" only where it stops runs. */
+  bondGate?: "live" | "all" | "off";
   /** Slippage the record assumes per swap, in bps; live fills worse than twice this are flagged. */
   assumedSlippageBps?: number;
 };
@@ -86,11 +88,14 @@ export class HealthChecker {
     return r ? view(r) : null;
   }
 
-  /** Pilots with no check for today yet. */
+  /** Pilots with no check for today yet, the longest unchecked first (a tick checks only some). */
   async due(now = Date.now()) {
     const day = Math.floor(now / DAY) * DAY;
     return this.d.db
-      .prepare("SELECT id FROM pilots WHERE status IN ('active','paused') AND NOT EXISTS (SELECT 1 FROM health_checks h WHERE h.pilot_id = pilots.id AND h.day = ?)")
+      .prepare(
+        `SELECT id FROM pilots WHERE status IN ('active','paused') AND NOT EXISTS (SELECT 1 FROM health_checks h WHERE h.pilot_id = pilots.id AND h.day = ?)
+         ORDER BY (SELECT COALESCE(MAX(h.day), 0) FROM health_checks h WHERE h.pilot_id = pilots.id), created_at`,
+      )
       .all<{ id: string }>(day);
   }
 
@@ -262,7 +267,11 @@ export class HealthChecker {
     const scripts = p.swarm?.scripts.length ? p.swarm.scripts.map((s) => s.id) : [p.strategy.id];
     for (const id of new Set(scripts)) {
       const g = await copyGate(this.d.db, this.d.nft, p.owner, id, this.d.wasm.wasmSha256);
-      if (!g.open) add("bond", "stop", `${id}: ${g.reason}`, g);
+      if (g.open) continue;
+      const mode = this.d.bondGate ?? "live";
+      const blocks = mode === "all" || (mode === "live" && p.mode === "live");
+      // Where the gate stops runs, the owner is asked; elsewhere (paper) it is only reported.
+      add("bond", blocks ? "stop" : "ok", blocks ? `${id}: ${g.reason}; runs are skipped` : `${id}: ${g.reason} (this pilot still trades it)`, g);
     }
   }
 

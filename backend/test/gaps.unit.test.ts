@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { copiedCapitalUsd, requiredBond } from "../src/copying.js";
 import { openDb } from "../src/db.js";
 import { computeFee, nextPeak } from "../src/fees.js";
-import { actionHash, addressOf, agentDigest, floatToWire, HyperliquidTestnet, msgpack, signL1Action, slippagePrice } from "../src/hyperliquid.js";
+import { actionHash, addressOf, agentDigest, floatToWire, HyperliquidTestnet, msgpack, nextNonce, signL1Action, slippagePrice } from "../src/hyperliquid.js";
 import { compilePolicy, MandateSchema } from "../src/mandate.js";
 import { PerpExecutor, perpTargets } from "../src/perps.js";
 import { allocate, attribute, CASH, initialState, plan, rebalanceSleeves, type SwarmConfig, SwarmConfigSchema, trueUp, valueOf } from "../src/swarm.js";
@@ -160,6 +160,12 @@ describe("Hyperliquid testnet signing (vectors from the official Python SDK)", (
     const s = secp256k1.Signature.fromHex(BigInt(sig.r).toString(16).padStart(64, "0") + BigInt(sig.s).toString(16).padStart(64, "0"), "compact").addRecoveryBit(sig.v - 27);
     const pub = s.recoverPublicKey(agentDigest(actionHash(c.action, c.nonce), "b")).toBytes(false);
     expect(pub).toEqual(secp256k1.getPublicKey(Buffer.from(KEY.slice(2), "hex"), false));
+  });
+
+  it("never reuses a nonce, even within one millisecond", () => {
+    const a = nextNonce(5_000_000_000_000);
+    expect(nextNonce(5_000_000_000_000)).toBe(a + 1);
+    expect(nextNonce(4_000_000_000_000)).toBe(a + 2);
   });
 
   it("writes numbers like the SDK", () => {

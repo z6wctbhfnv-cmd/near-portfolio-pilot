@@ -138,7 +138,8 @@ export class NftPublisher {
 
   /**
    * Names the payer of a fee an Agent API agent withdrew to the contract (recorder only). The contract
-   * credits at most what actually arrived and is not owed to anyone, once per reference.
+   * credits at most what it holds and does not owe, once per reference (0 if a withdrawal settled
+   * meanwhile: try again).
    */
   async recordFeePayment(a: { payer: string; tokenId: string; feeToken: string; amount: string; reference: string }): Promise<string> {
     const res = (await this.acct().callFunctionRaw({

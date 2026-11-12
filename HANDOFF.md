@@ -6,8 +6,8 @@ Six backend items from the gap list. Nothing here moved real money, sent a live 
 
 | What | How |
 |---|---|
-| Backend | `npm test`: 77 tests (44 before, all now running with the WASM built; 33 new) against fakes of the Agent API, NEAR RPC and Hyperliquid testnet |
-| NFT contract | `cargo test`: 53 tests, 11 new for `record_fee_payment` and the liabilities counter |
+| Backend | `npm test`: 82 tests (44 before, all now running with the WASM built; 38 new) against fakes of the Agent API, NEAR RPC and Hyperliquid testnet |
+| NFT contract | `cargo test`: 54 tests, 12 new for `record_fee_payment` and the liabilities counter, including a withdrawal settling during the balance check |
 | Strategies | `cargo test`: 10 tests; `npm run build:wasm` gives the same bytes as `backend/wasm/pilot-strategies.wasm` |
 | Python | `pytest`: 94 tests pass on the Mac's Python 3.9. `test_agent_llm.py` and `test_tasks.py` need Python 3.10+ and were not run |
 | Hyperliquid signing | Address, action hash and signature equal the official Python SDK's (0.24.0) on two orders, one with a builder fee (`backend/test/hl-vectors.json`) |
@@ -29,6 +29,9 @@ Six backend items from the gap list. Nothing here moved real money, sent a live 
 3. The agent previews, then withdraws USDC to the NFT contract under a stored Idempotency-Key, with the swap executor's retry and reconcile rules.
 4. Once it settles, the recorder calls `record_fee_payment` and the contract credits the split.
 5. If a week is not paid (blocked, refused, failed), the peak stays, so the profit is charged later and never twice.
+6. A payment interrupted after its key was stored is replayed under that same key by the reconciler.
+
+**Size limit.** The fee withdrawal counts against the signed policy like a swap: the USD budget and the USDC per-transaction limit (2 x `max_trade_usd`, so $100 with the defaults). A larger fee is refused every week and never paid, and the peak does not move, so nothing is lost but nothing is collected either. Splitting large fees into several payments is not built.
 
 ## Works only against fakes, needs the owner
 
@@ -36,13 +39,14 @@ Six backend items from the gap list. Nothing here moved real money, sent a live 
 2. **Mainnet contract.** The Agent API is mainnet-only, so a live fee can only go to a mainnet NFT contract. The testnet one cannot receive it. That contract must also be storage-registered on mainnet USDC (`storage_deposit`), or the withdrawal is refused.
 3. **Recorder key.** The function-call key must also list `record_fee_payment` (and `set_copied_capital` if `NFT_REPORT_COPIED_CAPITAL` is turned on).
 4. **Owners re-sign.** Existing agents need a `policy_update` (`POST /v1/pilots/:id/policy`) to get the fee destination. **This changes what the owner signs, from "funds can never leave" to "funds can leave only to the NFT contract, as USDC, within the budget and per-asset limits".** Say so in the UI.
-5. **Hyperliquid testnet.** The code is ready behind `HL_PERPS_ENABLED`. A first real testnet order needs a funded testnet account (mock USDC) and the owner's OK. The builder fee needs `approveBuilderFee` from the main wallet first.
+5. **Bonds, a behavior change.** Live pilots on the four built-in scripts now skip every run until `pilot-author-10734.testnet` locks at least $100 of USDC as bond per script (`ft_transfer_call` to the NFT contract with `msg {"token_id", "bond": true}`), or until `BOND_GATE=off`. Paper pilots still run and only report it.
+6. **Hyperliquid testnet.** The code is ready behind `HL_PERPS_ENABLED`. A first real testnet order needs a funded testnet account (mock USDC) and the owner's OK. The builder fee needs `approveBuilderFee` from the main wallet first.
 
 ## Limitations
 
 - Swarm pilots: no fees per sleeve, no NFT checkpoints and no drift replay yet. They run, net and book trades; the per-script record is in each run's `output.agents`.
 - The drift check replays daily closes, so with an every-few-hours script some gap is normal; it warns at 2 points and stops at 5.
-- The swarm's books are virtual and are scaled to the wallet before every run, so a live swap that settles late is booked on the next run.
+- The swarm's books are virtual. Live swaps are booked to the scripts that asked for them at their quoted amounts when sent, and every run first scales the books to the wallet. A swap that settles away from its quote, or has not settled by the next run, is spread pro rata over the sleeves that hold that asset, so live sleeve books are approximate.
 - The health check never pauses by itself; only the owner's "Pause" does. The drawdown stop and the bond gate act on their own.
 - The fee ledger values deposits at today's price; a deposit it cannot value blocks that week's fee rather than guessing.
 

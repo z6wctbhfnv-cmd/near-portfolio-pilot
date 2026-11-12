@@ -88,7 +88,7 @@ export function buildApp(cfg: Config, deps: AppDeps = {}) {
     feeAssetId: cfg.FEE_ASSET_ID,
     minFeeUsd: cfg.MIN_FEE_USD,
   });
-  const health = new HealthChecker({ db, pilots, history, catalog, wasm, nft, costBps: cfg.PAPER_COST_BPS });
+  const health = new HealthChecker({ db, pilots, history, catalog, wasm, nft, costBps: cfg.PAPER_COST_BPS, bondGate: cfg.BOND_GATE });
   /** The signed policy gets the fee destination only while fee payments are on and an NFT contract is set. */
   const policyOptions = (): { fee?: FeeRoute } =>
     cfg.FEE_PAYMENTS_ENABLED && cfg.STRATEGY_NFT_CONTRACT ? { fee: { contract: cfg.STRATEGY_NFT_CONTRACT, assetId: cfg.FEE_ASSET_ID } } : {};

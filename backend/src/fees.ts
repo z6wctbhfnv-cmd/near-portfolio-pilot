@@ -12,7 +12,8 @@
  * How a live agent pays: the Agent API has no `ft_transfer_call` (its withdraw and transfer bodies
  * carry no `msg`), so the agent withdraws USDC on chain `near` to the NFT contract, the only
  * destination its signed policy allows, and the recorder then names the payer and the script with
- * `record_fee_payment`. The contract credits at most what actually arrived (see the contract).
+ * `record_fee_payment`. The contract credits at most what it holds and does not already owe; the
+ * recorder is trusted to name the right payer and script.
  *
  * Payments follow the swap executor's rules: the Idempotency-Key and the exact body are stored before
  * the request, retryable failures replay the same key, UNCERTAIN is polled, a new key only after a
@@ -202,7 +203,7 @@ export class FeeLedger {
     if (!end || end.ts < periodStart) return { skipped: "no value recorded in the week" };
 
     // The peak starts at the value the pilot had when this script's first fee week began.
-    let peak = await this.d.db.prepare("SELECT hwm_usd FROM fee_hwm WHERE pilot_id = ? AND token_id = ?").get<{ hwm_usd: number }>(pilotId, tokenId);
+    let peak = await this.d.db.prepare("SELECT hwm_usd, since_ms FROM fee_hwm WHERE pilot_id = ? AND token_id = ?").get<{ hwm_usd: number; since_ms: number }>(pilotId, tokenId);
     if (!peak) {
       const start =
         (await value("SELECT total_usd, ts FROM snapshots WHERE pilot_id = ? AND ts <= ? ORDER BY ts DESC LIMIT 1", pilotId, periodStart)) ??
@@ -211,8 +212,14 @@ export class FeeLedger {
       await this.d.db
         .prepare("INSERT OR IGNORE INTO fee_hwm (pilot_id, token_id, hwm_usd, since_ms, updated_at) VALUES (?, ?, ?, ?, ?)")
         .run(pilotId, tokenId, start.total_usd, Math.max(periodStart, start.ts), Date.now());
-      peak = { hwm_usd: start.total_usd };
+      peak = { hwm_usd: start.total_usd, since_ms: Math.max(periodStart, start.ts) };
     }
+    // Deposits count from where the peak was last set: a week skipped or blocked in between must not
+    // turn its deposits into profit.
+    const lastFinal = await this.d.db
+      .prepare("SELECT MAX(period_end_ms) AS t FROM fee_ledger WHERE pilot_id = ? AND token_id = ? AND hwm_after_usd IS NOT NULL AND period_end_ms < ?")
+      .get<{ t: number | null }>(pilotId, tokenId, periodEnd);
+    const flowsFrom = lastFinal?.t ?? peak.since_ms;
 
     const id = existing?.id ?? randomUUID();
     const kind = p.mode;
@@ -230,7 +237,7 @@ export class FeeLedger {
     let depositsError: string | null = null;
     if (kind === "live") {
       try {
-        deposits = await this.depositsUsd(p, periodStart, periodEnd);
+        deposits = await this.depositsUsd(p, flowsFrom, periodEnd);
       } catch (e) {
         depositsError = (e as Error).message;
       }
@@ -459,18 +466,23 @@ export class FeeLedger {
 
   /**
    * Follows open payments (poll, or replay retry_pending under the same key while LIVE_EXECUTION is
-   * on), then asks the contract to credit every settled payment it has not credited yet.
+   * on), then asks the contract to credit every settled payment it has not credited yet. A payment
+   * left `prepared` (the process stopped between storing the key and getting an answer) may or may
+   * not have been sent, so it is replayed under its stored key too, never under a new one.
    */
-  async reconcile(): Promise<{ checked: number; replayed: number; recorded: number }> {
+  async reconcile(now = Date.now()): Promise<{ checked: number; replayed: number; recorded: number }> {
     let checked = 0;
     let replayed = 0;
     let recorded = 0;
     const rows = await this.d.db
-      .prepare(`SELECT f.*, p.agent_id FROM fee_ledger f JOIN pilots p ON p.id = f.pilot_id WHERE f.kind = 'live' AND f.status IN (${OPEN_STATUSES.map(() => "?").join(",")})`)
-      .all<FeeRow & { agent_id: string | null }>(...OPEN_STATUSES);
+      .prepare(
+        `SELECT f.*, p.agent_id FROM fee_ledger f JOIN pilots p ON p.id = f.pilot_id WHERE f.kind = 'live'
+         AND (f.status IN (${OPEN_STATUSES.map(() => "?").join(",")}) OR (f.status = 'prepared' AND f.updated_at < ?))`,
+      )
+      .all<FeeRow & { agent_id: string | null }>(...OPEN_STATUSES, now - 120_000);
     for (const r of rows) {
       try {
-        if (r.status === "retry_pending") {
+        if (r.status === "retry_pending" || r.status === "prepared") {
           if (!this.d.liveExecution || !this.d.paymentsEnabled || !r.agent_id) continue;
           const grant = await this.d.gateway.grantClient(r.pilot_id);
           if (!grant) continue;

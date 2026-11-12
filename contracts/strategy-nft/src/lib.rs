@@ -31,8 +31,8 @@
 //!   such field), so it withdraws plain USDC to this contract (`ft_transfer`, no callback) and the
 //!   recorder then names the payer and the script with `record_fee_payment`. The contract reads its
 //!   own token balance and credits at most the part that is not already owed to anyone
-//!   (`liabilities`), once per payment `reference`. The recorder can misname a payer but cannot
-//!   credit money that never arrived.
+//!   (`liabilities`), once per payment `reference`. The recorder is trusted to name the payer and
+//!   the script, but it cannot make the contract owe more than it holds.
 //!
 //! The current holder receives the author's share of fees (`revenue_receiver`). Selling the NFT sells
 //! that income and the history with it. Only the `recorder` (the pilot's account) may append
@@ -313,8 +313,11 @@ impl Contract {
     pub fn resolve_withdraw(&mut self, who: AccountId, fee_token: AccountId, amount: U128) -> bool {
         let ok = matches!(env::promise_result_checked(0, 0), Ok(_));
         if ok {
-            // The tokens have left: only now do they stop being owed.
+            // The tokens have left: only now do they stop being owed. A balance read taken before this
+            // point is now stale, so a fee recording that started earlier must not use it (see
+            // `on_fee_balance`).
             add_liability(&fee_token, -(amount.0 as i128));
+            env::storage_write(WITHDRAW_SEQ_KEY, &(read_u64(WITHDRAW_SEQ_KEY) + 1).to_le_bytes());
         } else {
             // Still owed (withdraw_fees never lowered the liability): give the balance back only.
             let key = (who, fee_token);
@@ -630,6 +633,7 @@ impl Contract {
                     "on_fee_balance".to_string(),
                     near_sdk::serde_json::json!({
                         "payer": payer, "token_id": token_id, "fee_token": fee_token, "amount": amount, "reference": reference,
+                        "withdraw_seq": read_u64(WITHDRAW_SEQ_KEY),
                     })
                     .to_string()
                     .into_bytes(),
@@ -639,13 +643,20 @@ impl Contract {
             )
     }
 
-    /// Callback of `record_fee_payment`. Returns the amount credited (0 = nothing).
+    /// Callback of `record_fee_payment`. Returns the amount credited (0 = nothing; the recorder may try
+    /// again later with the same reference).
     ///
-    /// The surplus check guards against bugs and a careless recorder; it is not a proof of who paid.
-    /// While a `withdraw_fees` transfer is in flight its amount is still counted as owed, so the surplus
-    /// can only be understated then, never overstated.
+    /// The balance was read in an earlier block. Money arriving since then only makes the surplus look
+    /// smaller (safe). Money leaving since then would make it look larger: a `withdraw_fees` transfer
+    /// that resolved in between lowered the liabilities but not the balance we read. So when any
+    /// withdrawal resolved after the read (`withdraw_seq` moved), nothing is credited and the recorder
+    /// retries. With that, the contract never credits more than it holds and does not owe.
     #[private]
-    pub fn on_fee_balance(&mut self, payer: AccountId, token_id: TokenId, fee_token: AccountId, amount: U128, reference: String) -> U128 {
+    pub fn on_fee_balance(&mut self, payer: AccountId, token_id: TokenId, fee_token: AccountId, amount: U128, reference: String, withdraw_seq: u64) -> U128 {
+        if read_u64(WITHDRAW_SEQ_KEY) != withdraw_seq {
+            env::log_str(&format!("fee {reference}: a withdrawal settled during the balance check, nothing credited; try again"));
+            return U128(0);
+        }
         let balance: u128 = match env::promise_result_checked(0, 100) {
             Ok(bytes) => match near_sdk::serde_json::from_slice::<U128>(&bytes) {
                 Ok(b) => b.0,
@@ -798,6 +809,13 @@ fn add_liability(fee_token: &AccountId, delta: i128) {
     let next = cur + delta;
     require!(next >= 0, "liabilities cannot go negative");
     env::storage_write(&k, &(next as u128).to_le_bytes());
+}
+
+/// Counts withdrawals that have left the contract (see `on_fee_balance`).
+const WITHDRAW_SEQ_KEY: &[u8] = b"wseq";
+
+fn read_u64(key: &[u8]) -> u64 {
+    env::storage_read(key).map(|b| u64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0)
 }
 
 fn payment_key(reference: &str) -> Vec<u8> {
@@ -1466,7 +1484,28 @@ mod tests {
     }
 
     fn record(c: &mut Contract, payer: AccountId, amount: u128, reference: &str) -> u128 {
-        c.on_fee_balance(payer, "trend-sma@v1".into(), usdc(), U128(amount), reference.into()).0
+        c.on_fee_balance(payer, "trend-sma@v1".into(), usdc(), U128(amount), reference.into(), read_u64(WITHDRAW_SEQ_KEY)).0
+    }
+
+    #[test]
+    fn a_withdrawal_settling_during_the_check_credits_nothing() {
+        let mut c = setup();
+        pay(&mut c, accounts(4), 52_500_000); // the holder is owed $50
+        // The recorder starts: the balance read sees the $50 still there, plus a new $52.50 payment.
+        let seq_at_call = read_u64(WITHDRAW_SEQ_KEY);
+        // Meanwhile the holder's $50 withdrawal leaves and resolves: liabilities drop by $50.
+        ctx(accounts(2), 0);
+        let _ = c.withdraw_fees(usdc());
+        balance_answer(near_sdk::PromiseResult::Successful(vec![]));
+        assert!(c.resolve_withdraw(accounts(2), usdc(), U128(50_000_000)));
+        // The stale balance would show $50 of "surplus" that is gone: refused, retried later.
+        balance_is(MIN_BOND + 52_500_000 + 52_500_000);
+        let got = c.on_fee_balance(accounts(4), "trend-sma@v1".into(), usdc(), U128(52_500_000), "sha256:02".into(), seq_at_call).0;
+        assert_eq!(got, 0);
+        assert_eq!(c.fee_payment("sha256:02".into()), None);
+        // A fresh read after the withdrawal: only what really arrived is credited.
+        balance_is(MIN_BOND + 2_500_000 + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:02"), 52_500_000);
     }
 
     #[test]

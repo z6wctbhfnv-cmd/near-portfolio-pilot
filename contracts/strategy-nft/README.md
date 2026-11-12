@@ -7,7 +7,7 @@ NEP-171 contract (Rust, near-sdk 5.30) where **one NFT is one script**, bound to
 - **Followers.** Agents `follow` a script and pay their own storage. The NFT never controls their wallets.
 - **Fees.** Followers pay the holder's copy fee (0–10% of new profit, default 5%) plus the platform fee (0.25%), in a whitelisted fungible token. A referrer gets 0.1% of profit out of the platform's 0.25%. The holder on its own script pays only the 0.25%. The contract splits the payment and credits balances; `withdraw_fees` pays out. A fee raise applies only after a 7-day notice.
   - From a wallet: `ft_transfer_call` with `msg {"token_id"}`; `ft_on_transfer` splits it at once.
-  - From a NEAR Intents Agent API agent, which cannot attach a `msg`: the agent withdraws plain USDC to this contract, then the recorder calls `record_fee_payment(payer, token_id, fee_token, amount, reference)`. The contract reads its own token balance and credits at most what is not already owed (`liabilities`: withdrawable balances, bonds and withdrawals in flight), once per `reference`. The recorder can misname a payer but cannot credit money that never arrived.
+  - From a NEAR Intents Agent API agent, which cannot attach a `msg`: the agent withdraws plain USDC to this contract, then the recorder calls `record_fee_payment(payer, token_id, fee_token, amount, reference)`. The contract reads its own token balance and credits at most what is not already owed (`liabilities`: withdrawable balances, bonds and withdrawals in flight), once per `reference`. If a withdrawal left the contract while the balance was being read, it credits nothing and the recorder tries again. So the recorder is trusted to name the right payer and script, but it cannot make the contract owe more than it holds.
 - **Sale.** `list_for_sale` / `buy`: the seller gets 99.5%, the treasury 0.5%. History, followers and future fees move to the buyer; the author stays credited.
 - **Script changes.** The holder can `update_script` to a new hash: the version goes up and the change date is stored. The code never goes on chain, only its hash.
 
@@ -46,7 +46,7 @@ The recorder also credits fees that agents withdrew to the contract (`record_fee
 
 ```bash
 cd contracts/strategy-nft
-cargo test                              # 53 unit tests
+cargo test                              # 54 unit tests
 cargo near build non-reproducible-wasm  # target/near/strategy_nft.wasm
 ```
 

@@ -146,6 +146,13 @@ export type OrderWire = { a: number; b: boolean; p: string; s: string; r: boolea
 export type AccountState = { equity: number; gross_notional: number; positions: Record<string, number> };
 export type OrderStatus = { kind: "filled"; total_sz: number; avg_px: number; oid: number } | { kind: "resting"; oid: number } | { kind: "error"; error: string };
 
+let lastNonce = 0;
+/** Millisecond nonces that never repeat, even for two orders in the same millisecond. */
+export function nextNonce(now = Date.now()) {
+  lastNonce = Math.max(now, lastNonce + 1);
+  return lastNonce;
+}
+
 export class HyperliquidTestnet {
   readonly url = HL_TESTNET_URL;
   private metaCache: { at: number; universe: Array<{ name: string; szDecimals: number }> } | null = null;
@@ -217,7 +224,7 @@ export class HyperliquidTestnet {
   }
 
   /** Signs and sends one order. */
-  async placeOrder(wire: OrderWire, nonce = Date.now()): Promise<OrderStatus> {
+  async placeOrder(wire: OrderWire, nonce = nextNonce()): Promise<OrderStatus> {
     if (!this.opts.privateKey) throw new Error("HL_TESTNET_PRIVATE_KEY is not set");
     const action = this.orderAction(wire);
     const signature = signL1Action(this.opts.privateKey, action, nonce);

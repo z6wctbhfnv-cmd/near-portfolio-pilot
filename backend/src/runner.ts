@@ -358,8 +358,18 @@ export class Runner {
       }
       after = (await this.holdings((await this.d.pilots.get(p.id))!)).holdings;
     }
-    const realized = Object.fromEntries([...new Set([...Object.keys(after), ...Object.keys(holdings)])].map((a) => [a, (after[a] ?? 0) - (holdings[a] ?? 0)]));
-    const sleeves = attribute(st.sleeves, pl, realized, px, after);
+    // Paper fills are known at once. Live swaps settle later, so they are booked at their quoted
+    // amounts when sent; the next run's true-up against the wallet corrects what settled differently.
+    let realized: Record<string, number>;
+    let booked: Holdings;
+    if (p.mode === "live") {
+      realized = await this.quotedFills(executions);
+      booked = Object.fromEntries([...new Set([...Object.keys(holdings), ...Object.keys(realized)])].map((a) => [a, Math.max(0, (holdings[a] ?? 0) + (realized[a] ?? 0))]));
+    } else {
+      realized = Object.fromEntries([...new Set([...Object.keys(after), ...Object.keys(holdings)])].map((a) => [a, (after[a] ?? 0) - (holdings[a] ?? 0)]));
+      booked = after;
+    }
+    const sleeves = attribute(st.sleeves, pl, realized, px, booked);
     // A script's state moves on when its wish was crossed or something it wanted was sent.
     const sent = executions.some((e) => e.status !== "blocked" && e.status !== "refused");
     for (const [k, next] of Object.entries(nextState)) {
@@ -389,6 +399,22 @@ export class Runner {
       .run(engineUsed, wasmSha, sha256Hex(inputJson), sha256Hex(JSON.stringify(output)), inputJson, json(output), val.total_usd, Date.now(), notes.length ? notes.join("; ") : null, runId);
     await logEvent(this.d.db, p.id, "info", `swarm run ${reason}: ${wants.length} script(s), ${pl.trades.length} net trade(s), ${Object.values(pl.crossed).filter((x) => x > 0.005).length} crossed`, { run_id: runId });
     return await this.getRun(runId);
+  }
+
+  /** Units each asset will change by once the swaps that were sent (or may have been) settle at their quotes. */
+  private async quotedFills(executions: ExecutionRow[]): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    for (const e of executions) {
+      if (["blocked", "refused", "needs_attention", "FAILED", "REFUNDED"].includes(e.status)) continue;
+      const req = JSON.parse(e.request_json) as { origin_asset?: string; destination_asset?: string; amount?: string };
+      const amountOut = (JSON.parse(e.quote_json ?? "null") as { quote?: { amountOut?: string; amount_out?: string } } | null)?.quote;
+      const [from, to] = await Promise.all([this.d.catalog.get(req.origin_asset ?? ""), this.d.catalog.get(req.destination_asset ?? "")]);
+      const outRaw = amountOut?.amountOut ?? amountOut?.amount_out;
+      if (!from || !to || !req.amount || !outRaw) continue;
+      out[e.sell_symbol] = (out[e.sell_symbol] ?? 0) - Number(req.amount) / 10 ** from.decimals;
+      out[e.buy_symbol] = (out[e.buy_symbol] ?? 0) + Number(outRaw) / 10 ** to.decimals;
+    }
+    return out;
   }
 
   /** Where the portfolio stands against the owner's drawdown stop. */

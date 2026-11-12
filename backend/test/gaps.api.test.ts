@@ -195,6 +195,41 @@ describe.skipIf(!wasmBuilt)("weekly copy fees", () => {
     expect(recorded).toHaveLength(1);
   });
 
+  it("live: a deposit made during a skipped week is still not charged as profit", async () => {
+    const t = setup(NFT_ENV);
+    t.mint("rebalance", "author.near", ["100000000", "100000000"]);
+    const { id } = await livePilot(t);
+    await t.call("POST", `/v1/pilots/${id}/run`);
+    const start = await firstValue(t, id);
+    const end1 = await endOfWeek(t, id, Date.now(), start - 10);
+    expect((await t.app.fees.settle(id, end1)).row!.status).toBe("no_profit");
+    const end2 = end1 + PERIOD_MS; // no value recorded this week: skipped
+    expect((await t.app.fees.settle(id, end2)).skipped).toMatch(/no value/);
+    t.agent.history = [{ type: "deposit", status: "SUCCESS", created_at: new Date(end2 - 3 * DAY).toISOString(), details: { request: { origin_asset: USDC }, delivered: String(50e6) } }];
+    const end3 = await endOfWeek(t, id, end2, start + 40);
+    const r = (await t.app.fees.settle(id, end3)).row!;
+    expect(r.deposits_usd).toBe(50);
+    expect(r.status).toBe("no_profit");
+  });
+
+  it("live: a payment interrupted after its key was stored is replayed under that key", async () => {
+    const t = setup({ ...NFT_ENV, FEE_PAYMENTS_ENABLED: "true", LIVE_EXECUTION: "true" });
+    t.mint("rebalance", "author.near", ["100000000", "100000000"]);
+    const { id } = await livePilot(t);
+    t.agent.policyExtra = { actions: ["swap", "withdraw"], destinations: { mode: "only", list: [{ action: "withdraw", chain: "near", address: "nft.test", memo: null }] } };
+    await t.call("POST", `/v1/pilots/${id}/run`);
+    const end = await endOfWeek(t, id, Date.now(), (await firstValue(t, id)) + 100);
+    const r = (await t.app.fees.settle(id, end)).row!;
+    expect(r.status).toBe("PROCESSING");
+    // As if the process died right after storing the key: the row is 'prepared', the answer lost.
+    await t.app.db.prepare("UPDATE fee_ledger SET status = 'prepared', correlation_id = NULL, updated_at = 0 WHERE id = ?").run(r.id);
+    expect((await t.app.fees.settle(id, end)).skipped).toMatch(/in flight/);
+    await t.app.fees.reconcile();
+    const live = t.agent.withdraws.filter((w) => !w.body.dry);
+    expect(live.map((w) => w.idempotencyKey)).toEqual([r.idempotency_key, r.idempotency_key]);
+    expect((await t.app.fees.get(r.id))!).toMatchObject({ status: "PROCESSING", correlation_id: r.correlation_id });
+  });
+
   it("live: the holder running its own script pays only 0.25%; a short balance blocks without moving the peak", async () => {
     const t = setup({ ...NFT_ENV, FEE_PAYMENTS_ENABLED: "true", LIVE_EXECUTION: "true" });
     t.mint("rebalance", "owner.near", ["0", "100000000"]);
@@ -308,6 +343,20 @@ describe.skipIf(!wasmBuilt)("daily health check", () => {
     expect(Math.abs(drift.data.simulated)).toBeLessThan(0.3);
   });
 
+  it("a short bond is a stop only where it stops runs", async () => {
+    const t = setup(NFT_ENV);
+    t.mint("rebalance");
+    const paper = await paperPilot(t);
+    await t.call("POST", `/v1/pilots/${paper}/run`);
+    const pc = (await t.call("POST", `/v1/pilots/${paper}/health/check`)).body;
+    expect(pc.findings.find((f: { check: string }) => f.check === "bond")).toMatchObject({ severity: "ok" });
+    expect(pc.question).toBeNull();
+    const { id } = await livePilot(t);
+    const lc = (await t.call("POST", `/v1/pilots/${id}/health/check`)).body;
+    expect(lc.findings.find((f: { check: string }) => f.check === "bond")).toMatchObject({ severity: "stop" });
+    expect(lc.question).not.toBeNull();
+  });
+
   it("the scheduler checks every active pilot once a day", async () => {
     const t = setup();
     const a = await paperPilot(t);
@@ -366,6 +415,35 @@ describe.skipIf(!wasmBuilt)("swarm: several scripts in one wallet", () => {
     expect(view.state.sleeves.map((s: { key: string }) => s.key).sort()).toEqual(["_cash", "a", "b"]);
     expect((await t.call("DELETE", `/v1/pilots/${id}/swarm`)).body.pilot.swarm).toBeNull();
     expect((await t.call("POST", `/v1/pilots/${id}/run`)).body.output.engine).not.toBe("swarm");
+  });
+
+  it("live: nets inside the signed policy, drops what it does not allow, books sent swaps at their quotes", async () => {
+    const off = setup();
+    const { id } = await livePilot(off);
+    const scripts = { scripts: [{ key: "a", id: "rebalance", params: { weights: { NEAR: 0.5 } } }, { key: "b", id: "rebalance", params: { weights: { NEAR: 0.3 } } }] };
+    expect((await off.call("PUT", `/v1/pilots/${id}/swarm`, scripts)).status).toBe(200);
+    const r1 = (await off.call("POST", `/v1/pilots/${id}/run`)).body;
+    expect(r1.output.engine).toBe("swarm");
+    expect(r1.output.trades).toEqual([{ sell: "USDC", buy: "NEAR", usd: 40 }]); // $25 + $15 from two $50 sleeves: one swap
+    expect(r1.executions.map((e: { status: string; error_code: string }) => `${e.status}:${e.error_code}`)).toEqual(["blocked:live_execution_disabled"]);
+    // The signed policy no longer allows NEAR: the main agent drops both wishes before anything is sent.
+    const p = (await off.app.pilots.get(id))!;
+    await off.app.pilots.update(id, { policy_json: JSON.stringify({ ...(p.policy as unknown as object), assets: [USDC] }) });
+    const r2 = (await off.call("POST", `/v1/pilots/${id}/run`)).body;
+    expect(r2.output.plan.dropped.map((d: { key: string; reason: string }) => `${d.key}: ${d.reason}`)).toEqual(["a: the signed policy does not allow NEAR", "b: the signed policy does not allow NEAR"]);
+    expect(r2.executions).toHaveLength(0);
+
+    const on = setup({ LIVE_EXECUTION: "true" });
+    const live = await livePilot(on);
+    await on.call("PUT", `/v1/pilots/${live.id}/swarm`, scripts);
+    const r3 = (await on.call("POST", `/v1/pilots/${live.id}/run`)).body;
+    expect(r3.executions[0].status).toBe("PROCESSING");
+    // The fake wallet has not moved yet, but the sleeves already hold the NEAR they bought, by their wish.
+    const st = (await on.app.pilots.get(live.id))!.swarm_state!;
+    const near = (k: string) => st.sleeves[k]?.units.NEAR ?? 0;
+    expect(near("a")).toBeGreaterThan(0);
+    expect(near("a") / near("b")).toBeCloseTo(25 / 15, 1);
+    expect(near("_cash")).toBe(0);
   });
 
   it("refuses a swarm outside the signed policy and invalid configs", async () => {
