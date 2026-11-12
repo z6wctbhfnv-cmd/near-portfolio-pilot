@@ -5,7 +5,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { ConfigError, NotFound } from "./agent.js";
-import { type App, applyIntentResult } from "./app.js";
+import { type App, applyIntentResult, tick } from "./app.js";
 import { backtest } from "./backtest.js";
 import { describeConfig } from "./config.js";
 import { json, parse } from "./db.js";
@@ -17,7 +17,7 @@ import { DEFAULT_UNIVERSE, universeBySymbol } from "./tokens.js";
 const DAY = 86_400_000;
 export const RISK_NOTICE =
   "The Agent API is an experimental, mainnet-only beta. You and your users may lose all assets used with it, or lose access to them. It is operated by NEAR Technologies Limited. NEAR Portfolio Pilot is an unaudited hackathon prototype; read DISCLAIMER.md.";
-const PUBLIC = new Set(["/health", "/v1/config"]);
+const PUBLIC = new Set(["/health", "/v1/config", "/v1/cron"]);
 
 const SCRIPT_PROMPT = `You write trading scripts for Pilot. Output ONLY Python code, no prose, no markdown fences.
 Exactly one function: def target(daily):
@@ -111,13 +111,13 @@ export function buildServer(app: App) {
     return reply.code(500).send({ error: { code: "internal_error", message: err.message } });
   });
 
-  const pilotOr404 = (id: string) => {
-    const p = app.pilots.get(id);
+  const pilotOr404 = async (id: string) => {
+    const p = await app.pilots.get(id);
     if (!p) throw new NotFound(`pilot ${id} not found`);
     return p;
   };
-  const liveAgent = (id: string) => {
-    const p = pilotOr404(id);
+  const liveAgent = async (id: string) => {
+    const p = await pilotOr404(id);
     if (p.mode !== "live" || !p.agent_id) throw new HttpError(409, "no_agent", "this pilot has no Agent API agent (paper pilot, or the owner has not signed agent_create yet)");
     return { pilot: p, agentId: p.agent_id };
   };
@@ -132,6 +132,19 @@ export function buildServer(app: App) {
     return { data: u.map((a) => ({ symbol: a.symbol, asset_id: a.asset_id, stable: a.stable, decimals: a.token?.decimals ?? null, price: a.price, listed: Boolean(a.token) })) };
   });
   server.get("/v1/strategies", async () => ({ data: catalog() }));
+
+  // Background work for serverless deploys: Vercel Cron calls this with "Authorization: Bearer
+  // <CRON_SECRET>". Without CRON_SECRET the route is off (the local server runs its own scheduler).
+  server.get("/v1/cron", async (req) => {
+    const secret = app.cfg.CRON_SECRET;
+    const got = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    if (!secret || got.length !== secret.length || !timingSafeEqual(Buffer.from(got), Buffer.from(secret))) {
+      throw new HttpError(401, "unauthorized", "cron secret required");
+    }
+    const started = Date.now();
+    await tick(app);
+    return { ok: true, ms: Date.now() - started };
+  });
 
   // A user script drafted by NEAR AI from the owner's idea. The model only drafts: the web app
   // checks the code and the owner backtests it before anything is minted. Nothing here runs it.
@@ -221,7 +234,7 @@ export function buildServer(app: App) {
 
     if (b.mode === "paper") {
       const stable = String(strategy.params.stable ?? "USDC");
-      const p = app.pilots.create({
+      const p = await app.pilots.create({
         name: b.name,
         mode: "paper",
         status: "active",
@@ -242,7 +255,7 @@ export function buildServer(app: App) {
     app.gateway.api(); // fails fast (503 not_configured) before anything is stored
     const tokens = await app.catalog.all();
     const { policy, warnings } = compilePolicy(mandate, tokens);
-    const p = app.pilots.create({
+    const p = await app.pilots.create({
       name: b.name,
       mode: "live",
       status: "pending_owner",
@@ -262,16 +275,16 @@ export function buildServer(app: App) {
         { policy, mandate, terms_evidence: evidence },
       );
     } catch (e) {
-      app.db.prepare("DELETE FROM pilots WHERE id = ?").run(p!.id); // nothing to sign: no half-created pilot
+      await app.db.prepare("DELETE FROM pilots WHERE id = ?").run(p!.id); // nothing to sign: no half-created pilot
       throw e;
     }
     return reply.code(201).send({ pilot: p, owner_action: generated, warnings, notes });
   });
 
-  server.get("/v1/pilots", async () => ({ data: app.pilots.list() }));
+  server.get("/v1/pilots", async () => ({ data: await app.pilots.list() }));
 
   server.get("/v1/pilots/:id", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
+    const p = await pilotOr404((req.params as { id: string }).id);
     let agent: unknown = null;
     let policy: unknown = null;
     if (p.agent_id && app.gateway.hasKey) {
@@ -280,11 +293,11 @@ export function buildServer(app: App) {
         app.gateway.api().getPolicy(p.agent_id).catch((e: Error) => ({ error: e.message })),
       ]);
     }
-    return { pilot: p, agent, live_policy: policy, intents: app.gateway.pendingIntents(p.id) };
+    return { pilot: p, agent, live_policy: policy, intents: await app.gateway.pendingIntents(p.id) };
   });
 
   server.patch("/v1/pilots/:id", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
+    const p = await pilotOr404((req.params as { id: string }).id);
     const b = body(
       z.object({
         name: z.string().min(1).max(80).optional(),
@@ -299,7 +312,7 @@ export function buildServer(app: App) {
     if (b.paused === true && p.status !== "active") throw new HttpError(409, "bad_state", `only an active pilot can be paused (it is ${p.status})`);
     if (b.paused === false && p.status !== "paused") throw new HttpError(409, "bad_state", `only a paused pilot can be resumed (it is ${p.status})`);
     return {
-      pilot: app.pilots.update(p.id, {
+      pilot: await app.pilots.update(p.id, {
         ...(b.name ? { name: b.name } : {}),
         ...(b.review_auto_apply !== undefined ? { review_auto_apply: b.review_auto_apply ? 1 : 0 } : {}),
         // Pausing stops the scheduler from running this pilot. Freezing the agent itself is the owner's
@@ -312,7 +325,7 @@ export function buildServer(app: App) {
   });
 
   server.put("/v1/pilots/:id/strategy", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
+    const p = await pilotOr404((req.params as { id: string }).id);
     const b = body(StrategyBody, req.body);
     let params: Record<string, unknown>;
     try {
@@ -326,18 +339,18 @@ export function buildServer(app: App) {
       const outside = sym.filter((s) => !allowed.has(universeBySymbol(s)?.asset_id ?? ""));
       if (outside.length) throw new HttpError(409, "outside_policy", `the signed policy does not allow ${outside.join(", ")}; update the policy first`);
     }
-    return { pilot: app.pilots.update(p.id, { strategy_id: b.id, strategy_params_json: json(params)!, ...(b.id !== p.strategy.id ? { strategy_state_json: "{}" } : {}) }) };
+    return { pilot: await app.pilots.update(p.id, { strategy_id: b.id, strategy_params_json: json(params)!, ...(b.id !== p.strategy.id ? { strategy_state_json: "{}" } : {}) }) };
   });
 
   server.get("/v1/pilots/:id/portfolio", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
+    const p = await pilotOr404((req.params as { id: string }).id);
     const { holdings, source } = await app.runner.holdings(p);
     const val = await app.runner.valuation(holdings);
     return { pilot_id: p.id, source, ...val };
   });
 
   server.post("/v1/pilots/:id/run", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
+    const p = await pilotOr404((req.params as { id: string }).id);
     if (p.status === "pending_owner") throw new HttpError(409, "bad_state", "the owner has not signed agent_create yet");
     // Freeze means everything stops until the owner resumes, manual runs included.
     if (p.status === "paused" || p.status === "frozen" || p.status === "archived") {
@@ -353,21 +366,21 @@ export function buildServer(app: App) {
   });
 
   server.get("/v1/pilots/:id/runs", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
+    const p = await pilotOr404((req.params as { id: string }).id);
     const limit = Math.min(100, Number((req.query as { limit?: string }).limit ?? 20));
-    const rows = app.db.prepare("SELECT id FROM runs WHERE pilot_id = ? ORDER BY started_at DESC LIMIT ?").all(p.id, limit) as Array<{ id: string }>;
-    return { data: rows.map((r) => app.runner.getRun(r.id)) };
+    const rows = await app.db.prepare("SELECT id FROM runs WHERE pilot_id = ? ORDER BY started_at DESC LIMIT ?").all<{ id: string }>(p.id, limit);
+    return { data: await Promise.all(rows.map((r) => app.runner.getRun(r.id))) };
   });
 
   server.get("/v1/runs/:id", async (req) => {
-    const r = app.runner.getRun((req.params as { id: string }).id);
+    const r = await app.runner.getRun((req.params as { id: string }).id);
     if (!r) throw new NotFound("run not found");
     return r;
   });
 
   server.get("/v1/pilots/:id/executions", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
-    const rows = app.db.prepare("SELECT * FROM executions WHERE pilot_id = ? ORDER BY created_at DESC LIMIT 200").all(p.id) as Array<Record<string, unknown>>;
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const rows = await app.db.prepare("SELECT * FROM executions WHERE pilot_id = ? ORDER BY created_at DESC LIMIT 200").all<Record<string, unknown>>(p.id);
     return {
       data: rows.map((e) => ({ ...e, request: parse(e.request_json, null), quote: parse(e.quote_json, null), response: parse(e.response_json, null), request_json: undefined, quote_json: undefined, response_json: undefined })),
     };
@@ -380,25 +393,25 @@ export function buildServer(app: App) {
   });
 
   server.get("/v1/pilots/:id/snapshots", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
-    const rows = app.db.prepare("SELECT ts, total_usd, holdings_json FROM snapshots WHERE pilot_id = ? ORDER BY ts DESC LIMIT 500").all(p.id) as Array<Record<string, unknown>>;
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const rows = await app.db.prepare("SELECT ts, total_usd, holdings_json FROM snapshots WHERE pilot_id = ? ORDER BY ts DESC LIMIT 500").all<Record<string, unknown>>(p.id);
     return { data: rows.map((s) => ({ ts: s.ts, total_usd: s.total_usd, holdings: parse(s.holdings_json, []) })) };
   });
 
   server.get("/v1/pilots/:id/events", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
-    const rows = app.db.prepare("SELECT ts, level, message, data_json FROM events WHERE pilot_id = ? ORDER BY id DESC LIMIT 200").all(p.id) as Array<Record<string, unknown>>;
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const rows = await app.db.prepare("SELECT ts, level, message, data_json FROM events WHERE pilot_id = ? ORDER BY id DESC LIMIT 200").all<Record<string, unknown>>(p.id);
     return { data: rows.map((e) => ({ ts: e.ts, level: e.level, message: e.message, data: parse(e.data_json, null) })) };
   });
 
   // ------------------------------------------------------------ reviews
 
   server.post("/v1/pilots/:id/review", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
+    const p = await pilotOr404((req.params as { id: string }).id);
     const b = body(z.object({ period_days: z.number().int().min(1).max(90).optional() }), req.body);
     return app.reviewer.review(p.id, { periodDays: b.period_days });
   });
-  server.get("/v1/pilots/:id/reviews", async (req) => ({ data: app.reviewer.list(pilotOr404((req.params as { id: string }).id).id) }));
+  server.get("/v1/pilots/:id/reviews", async (req) => ({ data: await app.reviewer.list((await pilotOr404((req.params as { id: string }).id)).id) }));
   server.post("/v1/reviews/:id/apply", async (req) => {
     try {
       return app.reviewer.apply((req.params as { id: string }).id);
@@ -406,19 +419,19 @@ export function buildServer(app: App) {
       throw new HttpError(409, "bad_state", (e as Error).message);
     }
   });
-  server.post("/v1/reviews/:id/dismiss", async (req) => app.reviewer.dismiss((req.params as { id: string }).id) ?? {});
+  server.post("/v1/reviews/:id/dismiss", async (req) => (await app.reviewer.dismiss((req.params as { id: string }).id)) ?? {});
 
   // ------------------------------------------------------------ owner actions (live)
 
   server.post("/v1/pilots/:id/grants", async (req, reply) => {
-    const { pilot, agentId } = liveAgent((req.params as { id: string }).id);
+    const { pilot, agentId } = await liveAgent((req.params as { id: string }).id);
     const b = body(z.object({ label: z.string().min(1).max(80).default("Portfolio Pilot runner"), ttl_days: z.number().int().min(1).max(365).default(30) }), req.body);
     const g = await app.gateway.issueGrant(pilot.id, agentId, b.label, b.ttl_days);
     return reply.code(201).send({ grant_id: g.grant_id, expires_at: g.expires_at, owner_action: g.generated });
   });
 
   server.post("/v1/pilots/:id/policy", async (req, reply) => {
-    const { pilot, agentId } = liveAgent((req.params as { id: string }).id);
+    const { pilot, agentId } = await liveAgent((req.params as { id: string }).id);
     const b = body(z.object({ text: z.string().max(4000).optional(), mandate: z.unknown().optional() }), req.body);
     const mandate = b.text ? (await parseMandate(b.text, app.ai)).mandate : b.mandate ? body(MandateSchema, b.mandate) : pilot.mandate;
     if (!mandate) throw new HttpError(400, "validation_failed", "give `text` or `mandate`");
@@ -435,14 +448,14 @@ export function buildServer(app: App) {
 
   for (const action of ["freeze", "unfreeze", "archive"] as const) {
     server.post(`/v1/pilots/:id/${action}`, async (req, reply) => {
-      const { pilot, agentId } = liveAgent((req.params as { id: string }).id);
+      const { pilot, agentId } = await liveAgent((req.params as { id: string }).id);
       const generated = await app.gateway.generate({ type: `agent_${action}`, agent_id: agentId } as GenerateIntentRequest, pilot.id);
       return reply.code(201).send({ owner_action: generated });
     });
   }
 
   server.post("/v1/pilots/:id/deposit", async (req) => {
-    const { agentId } = liveAgent((req.params as { id: string }).id);
+    const { agentId } = await liveAgent((req.params as { id: string }).id);
     const b = body(z.object({ origin_asset: z.string().min(3), amount: z.string().regex(/^\d+$/).optional() }), req.body);
     const deposit = await app.gateway.api().deposit(agentId, { origin_asset: b.origin_asset, ...(b.amount ? { amount: b.amount } : {}), confidential: false });
     // The Agent API asks partners to show the risk notice again before the owner funds the wallet.
@@ -450,42 +463,42 @@ export function buildServer(app: App) {
   });
 
   server.get("/v1/pilots/:id/balances", async (req) => {
-    const { agentId } = liveAgent((req.params as { id: string }).id);
+    const { agentId } = await liveAgent((req.params as { id: string }).id);
     return app.gateway.api().getBalances(agentId);
   });
 
   server.get("/v1/pilots/:id/history", async (req) => {
-    const { agentId } = liveAgent((req.params as { id: string }).id);
+    const { agentId } = await liveAgent((req.params as { id: string }).id);
     return app.gateway.api().getHistory(agentId, { limit: 50 } as never);
   });
 
-  server.get("/v1/pilots/:id/intents", async (req) => ({ data: app.gateway.pendingIntents(pilotOr404((req.params as { id: string }).id).id) }));
+  server.get("/v1/pilots/:id/intents", async (req) => ({ data: await app.gateway.pendingIntents((await pilotOr404((req.params as { id: string }).id)).id) }));
 
   server.post("/v1/intents/:cid/submit", async (req) => {
     const { cid } = req.params as { cid: string };
     const b = body(z.object({ signed_data: z.record(z.string(), z.unknown()) }), req.body);
     const submitted = await app.gateway.submit(cid, b.signed_data as unknown as SignedData);
     const status = await app.gateway.status(cid, 10_000).catch(() => submitted as { status: string });
-    if (app.gateway.isTerminal(status.status)) applyIntentResult(app, cid, status.status);
+    if (app.gateway.isTerminal(status.status)) await applyIntentResult(app, cid, status.status);
     return status;
   });
 
   server.get("/v1/intents/:cid", async (req) => {
     const { cid } = req.params as { cid: string };
-    if (!app.gateway.intentRow(cid)) throw new NotFound(`unknown correlation_id ${cid}`);
+    if (!(await app.gateway.intentRow(cid))) throw new NotFound(`unknown correlation_id ${cid}`);
     const waitMs = Number((req.query as { wait_ms?: string }).wait_ms ?? 0);
     const status = await app.gateway.status(cid, Number.isFinite(waitMs) ? waitMs : 0);
-    if (app.gateway.isTerminal(status.status)) applyIntentResult(app, cid, status.status);
-    return { status, generated: app.gateway.generatedOf(cid) };
+    if (app.gateway.isTerminal(status.status)) await applyIntentResult(app, cid, status.status);
+    return { status, generated: await app.gateway.generatedOf(cid) };
   });
 
   // ------------------------------------------------------------ strategy NFT
 
   server.get("/v1/pilots/:id/nft", async (req) => {
-    const p = pilotOr404((req.params as { id: string }).id);
-    const local = app.db
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const local = await app.db
       .prepare("SELECT id, started_at, engine, input_sha256, output_sha256, wasm_sha256, total_usd, nft_status, nft_tx FROM runs WHERE pilot_id = ? ORDER BY started_at DESC LIMIT 100")
-      .all(p.id) as Array<{ wasm_sha256: string | null }>;
+      .all<{ wasm_sha256: string | null }>(p.id);
     const wasm = local.find((r) => r.wasm_sha256)?.wasm_sha256 ?? null;
     const codeHash = wasm ? scriptCodeHash(wasm, p.strategy.id) : null;
     if (!app.nft.contract || !codeHash) return { code_hash: codeHash, token_id: null, contract: app.nft.contract, on_chain: null, local_runs: local };

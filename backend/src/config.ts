@@ -43,6 +43,11 @@ const schema = z.object({
   LIVE_OWNERS: optional,
   PILOT_MASTER_KEY: optional,
   DATABASE_PATH: z.string().default(resolve(REPO_ROOT, "data/pilot.sqlite")),
+  /** Turso / libSQL URL (libsql://...). When set it wins over DATABASE_PATH: needed on Vercel. */
+  DATABASE_URL: optional,
+  DATABASE_AUTH_TOKEN: optional,
+  /** Vercel Cron sends "Authorization: Bearer <CRON_SECRET>" to /api/cron. */
+  CRON_SECRET: optional,
 
   NEAR_INTENTS_AGENT_API_URL: z.string().default("https://api.demo.agentsonintents.com"),
   NEAR_INTENTS_AGENT_API_KEY: optional,
@@ -57,9 +62,14 @@ const schema = z.object({
   NEARAI_MODEL: z.string().default("deepseek/deepseek-v3.2"),
 
   STRATEGY_ENGINE: z.enum(["local", "outlayer", "auto"]).default("auto"),
+  // The committed build in backend/wasm (same bytes as `npm run build:wasm`, see its sha256), else the local build.
   STRATEGY_WASM_PATH: z
     .string()
-    .default(resolve(REPO_ROOT, "strategies/target/wasm32-wasip1/release/pilot-strategies.wasm")),
+    .default(
+      existsSync(resolve(BACKEND_ROOT, "wasm/pilot-strategies.wasm"))
+        ? resolve(BACKEND_ROOT, "wasm/pilot-strategies.wasm")
+        : resolve(REPO_ROOT, "strategies/target/wasm32-wasip1/release/pilot-strategies.wasm"),
+    ),
   OUTLAYER_API_URL: z.string().default("https://api.outlayer.ai"),
   OUTLAYER_PAYMENT_KEY: optional,
   /** `owner/project` of the deployed strategy module, e.g. `pilot.near/portfolio-strategies`. */
@@ -82,6 +92,8 @@ const schema = z.object({
 export type Config = z.infer<typeof schema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  // The Turso integration on Vercel provides TURSO_DATABASE_URL / TURSO_AUTH_TOKEN.
+  env = { ...env, DATABASE_URL: env.DATABASE_URL || env.TURSO_DATABASE_URL, DATABASE_AUTH_TOKEN: env.DATABASE_AUTH_TOKEN || env.TURSO_AUTH_TOKEN };
   const parsed = schema.safeParse(env);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
+  "functions": { "api/index.ts": { "maxDuration": 300, "includeFiles": "wasm/**" } },
+  "crons": [{ "path": "/v1/cron", "schedule": "0 6 * * *" }]
+}

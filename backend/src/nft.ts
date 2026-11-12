@@ -127,12 +127,12 @@ export async function publishCheckpoints(db: Db, nft: NftPublisher, now = Date.n
   if (!nft.configured) return [];
   const periodEnd = Math.floor(now / PERIOD_MS) * PERIOD_MS;
   const periodStart = periodEnd - PERIOD_MS;
-  const runs = db
+  const runs = await db
     .prepare(
       `SELECT r.pilot_id, r.wasm_sha256, r.output_sha256, p.strategy_id FROM runs r JOIN pilots p ON p.id = r.pilot_id
        WHERE r.status = 'ok' AND r.wasm_sha256 IS NOT NULL AND r.started_at >= ? AND r.started_at < ? ORDER BY r.started_at`,
     )
-    .all(periodStart, periodEnd) as Array<{ pilot_id: string; wasm_sha256: string; output_sha256: string | null; strategy_id: string }>;
+    .all<{ pilot_id: string; wasm_sha256: string; output_sha256: string | null; strategy_id: string }>(periodStart, periodEnd);
 
   // code_hash -> pilots and run output hashes of the period
   const groups = new Map<string, { pilots: Set<string>; outputs: string[] }>();
@@ -148,7 +148,7 @@ export async function publishCheckpoints(db: Db, nft: NftPublisher, now = Date.n
   const valueAt = db.prepare("SELECT total_usd FROM snapshots WHERE pilot_id = ? AND ts <= ? ORDER BY ts DESC LIMIT 1");
   const firstAfter = db.prepare("SELECT total_usd FROM snapshots WHERE pilot_id = ? AND ts >= ? AND ts < ? ORDER BY ts LIMIT 1");
   for (const [codeHash, g] of groups) {
-    const seen = db.prepare("SELECT 1 FROM nft_checkpoints WHERE code_hash = ? AND period_end_ms = ?").get(codeHash, periodEnd);
+    const seen = await db.prepare("SELECT 1 FROM nft_checkpoints WHERE code_hash = ? AND period_end_ms = ?").get(codeHash, periodEnd);
     if (seen) continue;
     try {
       const tokenId = await nft.tokenByCodeHash(codeHash);
@@ -156,25 +156,25 @@ export async function publishCheckpoints(db: Db, nft: NftPublisher, now = Date.n
       const record = await nft.record(tokenId);
       const last = record.at(-1);
       if (last && last.period_end_ms >= periodEnd) {
-        db.prepare("INSERT OR IGNORE INTO nft_checkpoints (code_hash, period_end_ms, token_id, tx) VALUES (?, ?, ?, NULL)").run(codeHash, periodEnd, tokenId);
+        await db.prepare("INSERT OR IGNORE INTO nft_checkpoints (code_hash, period_end_ms, token_id, tx) VALUES (?, ?, ?, NULL)").run(codeHash, periodEnd, tokenId);
         continue;
       }
       const returns: number[] = [];
       for (const pid of g.pilots) {
         // Start of the period, or the pilot's first value inside it if it started mid-period.
-        const start = (valueAt.get(pid, periodStart) ?? firstAfter.get(pid, periodStart, periodEnd)) as { total_usd: number } | undefined;
-        const end = valueAt.get(pid, periodEnd) as { total_usd: number } | undefined;
+        const start = (await valueAt.get<{ total_usd: number }>(pid, periodStart)) ?? (await firstAfter.get<{ total_usd: number }>(pid, periodStart, periodEnd));
+        const end = await valueAt.get<{ total_usd: number }>(pid, periodEnd);
         if (start && end && start.total_usd > 0) returns.push(end.total_usd / start.total_usd - 1);
       }
       if (!returns.length) continue;
       const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
       const prevIndex = last ? Number(last.equity_index) : 1_000_000;
       const ids = [...g.pilots];
-      const execs = db
+      const execs = await db
         .prepare(
           `SELECT id, status FROM executions WHERE pilot_id IN (${ids.map(() => "?").join(",")}) AND created_at >= ? AND created_at < ? ORDER BY id`,
         )
-        .all(...ids, periodStart, periodEnd) as Array<{ id: string; status: string }>;
+        .all<{ id: string; status: string }>(...ids, periodStart, periodEnd);
       const proofs = [...g.outputs.sort(), ...execs.map((e) => `${e.id}:${e.status}`)].join("\n");
       const checkpoint: Checkpoint = {
         period_end_ms: periodEnd,
@@ -185,14 +185,14 @@ export async function publishCheckpoints(db: Db, nft: NftPublisher, now = Date.n
         followers: g.pilots.size,
       };
       const tx = await nft.appendCheckpoint(tokenId, checkpoint);
-      db.prepare("INSERT OR REPLACE INTO nft_checkpoints (code_hash, period_end_ms, token_id, tx) VALUES (?, ?, ?, ?)").run(codeHash, periodEnd, tokenId, tx);
-      db.prepare(
+      await db.prepare("INSERT OR REPLACE INTO nft_checkpoints (code_hash, period_end_ms, token_id, tx) VALUES (?, ?, ?, ?)").run(codeHash, periodEnd, tokenId, tx);
+      await db.prepare(
         `UPDATE runs SET nft_status = 'published', nft_tx = ? WHERE status = 'ok' AND started_at >= ? AND started_at < ? AND pilot_id IN (${ids.map(() => "?").join(",")})`,
       ).run(tx, periodStart, periodEnd, ...ids);
-      logEvent(db, null, "info", `NFT ${tokenId}: checkpoint ${new Date(periodEnd).toISOString()} appended`, { tx, followers: g.pilots.size });
+      await logEvent(db, null, "info", `NFT ${tokenId}: checkpoint ${new Date(periodEnd).toISOString()} appended`, { tx, followers: g.pilots.size });
       done.push({ token_id: tokenId, tx });
     } catch (e) {
-      logEvent(db, null, "error", `NFT checkpoint for ${codeHash.slice(0, 12)}: ${(e as Error).message}`);
+      await logEvent(db, null, "error", `NFT checkpoint for ${codeHash.slice(0, 12)}: ${(e as Error).message}`);
     }
   }
   return done;

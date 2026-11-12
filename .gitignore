@@ -25,3 +25,6 @@ data/
 results/
 contracts/*/target/
 !web/data/
+
+# The published strategy module (sha256 recorded on the strategy NFTs); serverless deploys load it from here.
+!backend/wasm/pilot-strategies.wasm

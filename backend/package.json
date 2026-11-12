@@ -5,7 +5,7 @@
   "description": "Backend for NEAR Portfolio Pilot: owner intents, strategy runs (local WASI or OutLayer TEE), paper and live execution on the NEAR Intents Agent API, weekly AI review.",
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": "24.x"
   },
   "scripts": {
     "build:wasm": "cd ../strategies && RUSTFLAGS=\"--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$(rustc --print sysroot)=/rustc --remap-path-prefix=$PWD=/src\" cargo build --release --locked --target wasm32-wasip1",
@@ -20,6 +20,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@fastify/cors": "^11.4.1",
+    "@libsql/client": "^0.15.15",
     "@near-intents-agent-api/sdk": "^0.8.2",
     "fastify": "^5.12.8",
     "near-api-js": "^7.5.3",
