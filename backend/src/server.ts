@@ -82,7 +82,8 @@ export function buildServer(app: App) {
   const server = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { level: "info" }, bodyLimit: 1_000_000 });
   // Browsers may call from CORS_ORIGINS only (comma-separated); unset = any origin (local development).
   const origins = app.cfg.CORS_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean);
-  void server.register(cors, { origin: origins?.length ? origins : true });
+  // PATCH and PUT are needed by the web apps (pause/freeze, change strategy); the default allows only GET, HEAD, POST.
+  void server.register(cors, { origin: origins?.length ? origins : true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
 
   server.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
     const token = app.cfg.PILOT_API_TOKEN;
@@ -284,7 +285,17 @@ export function buildServer(app: App) {
 
   server.patch("/v1/pilots/:id", async (req) => {
     const p = pilotOr404((req.params as { id: string }).id);
-    const b = body(z.object({ name: z.string().min(1).max(80).optional(), review_auto_apply: z.boolean().optional(), paused: z.boolean().optional() }), req.body);
+    const b = body(
+      z.object({
+        name: z.string().min(1).max(80).optional(),
+        review_auto_apply: z.boolean().optional(),
+        paused: z.boolean().optional(),
+        // The owner's drawdown stop: switch it off or on, or move the level (2%..90% below the peak).
+        drawdown_stop: z.object({ enabled: z.boolean().optional(), max_drawdown: z.number().min(0.02).max(0.9).optional() }).optional(),
+      }),
+      req.body,
+    );
+    const mandate = b.drawdown_stop && p.mandate ? { ...p.mandate, drawdown_stop: { ...p.mandate.drawdown_stop, ...b.drawdown_stop } } : null;
     if (b.paused === true && p.status !== "active") throw new HttpError(409, "bad_state", `only an active pilot can be paused (it is ${p.status})`);
     if (b.paused === false && p.status !== "paused") throw new HttpError(409, "bad_state", `only a paused pilot can be resumed (it is ${p.status})`);
     return {
@@ -293,7 +304,9 @@ export function buildServer(app: App) {
         ...(b.review_auto_apply !== undefined ? { review_auto_apply: b.review_auto_apply ? 1 : 0 } : {}),
         // Pausing stops the scheduler from running this pilot. Freezing the agent itself is the owner's
         // own signed action (POST /freeze), which also stops the API from executing anything.
-        ...(b.paused === true ? { status: "paused" } : b.paused === false ? { status: "active", next_run_at: Date.now() } : {}),
+        ...(b.paused === true ? { status: "paused" } : b.paused === false ? { status: "active", next_run_at: Date.now(), risk_since: Date.now() } : {}),
+        // Resuming (or changing the stop) restarts the peak, so a stop that fired does not fire again at once.
+        ...(mandate ? { mandate_json: JSON.stringify(mandate), risk_since: Date.now() } : {}),
       }),
     };
   });
@@ -326,6 +339,10 @@ export function buildServer(app: App) {
   server.post("/v1/pilots/:id/run", async (req) => {
     const p = pilotOr404((req.params as { id: string }).id);
     if (p.status === "pending_owner") throw new HttpError(409, "bad_state", "the owner has not signed agent_create yet");
+    // Freeze means everything stops until the owner resumes, manual runs included.
+    if (p.status === "paused" || p.status === "frozen" || p.status === "archived") {
+      throw new HttpError(409, "bad_state", `the pilot is ${p.status}: resume it before running`);
+    }
     if (p.mode === "live" && !p.agent_id) throw new HttpError(409, "no_agent", "no agent yet");
     if (!app.wasm.available() && !app.outlayer.configured) throw new HttpError(503, "wasm_missing", "strategy WASM is not built: run `npm run build:wasm`");
     try {

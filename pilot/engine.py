@@ -527,7 +527,7 @@ def run(prices: pd.DataFrame, strategies: list[Strategy], mandate: Mandate | Non
             risk_scale = min(1.0, (eq - floor) / (peak * mandate.max_drawdown))  # share of the buffer left
         else:
             risk_scale = 1.0
-        if frozen_since is None and eq < floor:
+        if mandate.drawdown_mode != "off" and frozen_since is None and eq < floor:
             events.append(Event(ts, "breaker", f"drawdown {1 - eq / peak:.1%} > {mandate.max_drawdown:.0%}: all to USDC, agent frozen", {"equity": eq}))
             for a in pos:  # close perps first, reducing orders are always allowed
                 if pos[a] != 0.0:

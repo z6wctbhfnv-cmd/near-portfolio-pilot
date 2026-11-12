@@ -125,3 +125,14 @@ describe("AI mandate parsing", () => {
     expect(r.mandate.max_trade_usd).toBe(50);
   });
 });
+
+
+describe("drawdown stop from plain words", () => {
+  it("is on at 20% by default, takes a stated level, and can be switched off", () => {
+    expect(parseMandateRules("NEAR and BTC, careful").mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.2 });
+    expect(parseMandateRules("NEAR, stop at drawdown 15%").mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.15 });
+    expect(parseMandateRules("NEAR, просадка не больше 25%").mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.25 });
+    expect(parseMandateRules("NEAR and BTC, no stop").mandate.drawdown_stop.enabled).toBe(false);
+    expect(parseMandateRules("NEAR и BTC, без стоп-лосса").mandate.drawdown_stop.enabled).toBe(false);
+  });
+});

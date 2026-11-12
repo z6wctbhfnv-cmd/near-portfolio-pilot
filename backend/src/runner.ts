@@ -107,6 +107,11 @@ export class Runner {
     }
     portfolio.sort((a, b) => a.symbol.localeCompare(b.symbol));
 
+    // Drawdown stop, checked before the strategy gets a say: below the peak by the owner's limit,
+    // sell everything to the stablecoin and pause until the owner resumes.
+    const stop = this.drawdownCheck(p, portfolio);
+    if (stop.triggered) return this.emergencyExit(p, runId, holdings, portfolio, stop, reason);
+
     // History: closed days from the cache, plus the live price as the latest point.
     const lookback = STRATEGY_INFO[p.strategy.id].history_days(params);
     const history: Record<string, number[]> = {};
@@ -207,19 +212,94 @@ export class Runner {
     this.d.db.prepare("UPDATE runs SET nft_status = ? WHERE id = ?").run(status, runId);
   }
 
+  /** Where the portfolio stands against the owner's drawdown stop. */
+  drawdownCheck(p: Pilot, portfolio: Array<{ symbol: string; units: number; price: number }>) {
+    const cfg = p.mandate?.drawdown_stop ?? { enabled: true, max_drawdown: 0.2 };
+    const value = portfolio.reduce((a, x) => a + x.units * x.price, 0);
+    const row = this.d.db
+      .prepare("SELECT MAX(total_usd) AS peak FROM snapshots WHERE pilot_id = ? AND ts >= ?")
+      .get(p.id, p.risk_since ?? 0) as { peak: number | null };
+    const peak = Math.max(row.peak ?? 0, value);
+    const drawdown = peak > 0 ? 1 - value / peak : 0;
+    // Nothing risky held means nothing to sell (a fall in value then comes from money moved out).
+    const stable = String(p.strategy.params.stable ?? p.mandate?.stable ?? "USDC");
+    const atRisk = portfolio.some((x) => x.symbol !== stable && !DEFAULT_UNIVERSE.find((a) => a.symbol === x.symbol)?.stable && x.units * x.price >= 1);
+    return { enabled: cfg.enabled, limit: cfg.max_drawdown, value, peak, drawdown, triggered: cfg.enabled && atRisk && peak > 0 && drawdown >= cfg.max_drawdown };
+  }
+
   /**
-   * The mandate's caps for this run. Paper pilots count their own fills of the last 24 h against the
-   * daily budget; live pilots take the remaining budget from the Agent API's policy usage instead.
+   * Sells every risk asset to the stablecoin. The mandate's per-trade and budget caps do not slow the
+   * exit down (it only reduces risk); on a live agent the signed Agent API policy still applies, so
+   * whatever it refuses is retried on the next run. The pilot pauses once nothing risky is left.
+   */
+  private async emergencyExit(
+    p: Pilot,
+    runId: string,
+    holdings: Record<string, number>,
+    portfolio: Array<{ symbol: string; units: number; price: number }>,
+    stop: ReturnType<Runner["drawdownCheck"]>,
+    reason: string,
+  ) {
+    const stable = String(p.strategy.params.stable ?? p.mandate?.stable ?? "USDC");
+    const isStable = (s: string) => s === stable || DEFAULT_UNIVERSE.find((a) => a.symbol === s)?.stable;
+    const trades = portfolio
+      .filter((x) => !isStable(x.symbol) && x.units * x.price >= 1)
+      .map((x) => ({ sell: x.symbol, buy: stable, usd: Math.floor(x.units * x.price * 100) / 100 }));
+    const note = `drawdown stop: ${(stop.drawdown * 100).toFixed(1)}% below the peak of ${stop.peak.toFixed(2)} USD (limit ${(stop.limit * 100).toFixed(0)}%)`;
+    const output = { ok: true, engine: "risk", trades, notes: [note], target_weights: { [stable]: 1 } };
+    this.d.db.prepare("UPDATE runs SET engine = 'local', output_json = ? WHERE id = ?").run(json(output), runId);
+    const limits = { maxTradeUsd: null, remainingBudgetUsd: null, minTradeUsd: 1 };
+    let executions: ExecutionRow[] = [];
+    if (trades.length) {
+      if (p.mode === "paper") {
+        const h = { ...holdings };
+        executions = await this.d.executor.paper(p.id, runId, h, trades, limits);
+        this.d.pilots.update(p.id, { paper_holdings_json: json(h) });
+      } else {
+        executions = await this.d.executor.live(p.id, runId, p.agent_id!, trades, limits);
+      }
+    }
+    const after = await this.holdings(this.d.pilots.get(p.id)!);
+    const val = await this.valuation(after.holdings);
+    this.snapshot(p.id, val.total_usd, val.rows);
+    const riskLeft = val.rows.some((r) => !isStable(r.symbol) && (r.usd ?? 0) >= 1);
+    // Fully out: pause. Something refused (live policy budget): keep going on the next run.
+    this.d.pilots.update(p.id, riskLeft ? { next_run_at: Date.now() + 3_600_000 } : { status: "paused" });
+    this.d.db
+      .prepare("UPDATE runs SET status = 'ok', total_usd = ?, finished_at = ?, error = ? WHERE id = ?")
+      .run(val.total_usd, Date.now(), note, runId);
+    logEvent(this.d.db, p.id, "warn", `${note}: sold ${trades.length} position(s) to ${stable}${riskLeft ? ", the rest on the next run" : ", pilot paused until you resume"}`, {
+      run_id: runId,
+      reason,
+      executions: executions.map((e) => e.status),
+    });
+    return this.getRun(runId);
+  }
+
+  /**
+   * The mandate's caps for this run. Paper pilots count their own fills against every budget window
+   * the owner set (day, week, month) and take the tightest; live pilots take the remaining budget
+   * from the Agent API's policy usage instead.
    */
   limits(p: Pilot) {
     const m = p.mandate;
     const minTradeUsd = Number(p.strategy.params.min_trade_usd ?? 5);
     let remainingBudgetUsd: number | null = null;
-    if (p.mode === "paper" && m?.budget.daily_usd) {
-      const spent = this.d.db
-        .prepare("SELECT COALESCE(SUM(usd), 0) AS s FROM executions WHERE pilot_id = ? AND status = 'paper_filled' AND created_at > ?")
-        .get(p.id, Date.now() - 86_400_000) as { s: number };
-      remainingBudgetUsd = Math.max(0, m.budget.daily_usd - spent.s);
+    if (p.mode === "paper" && m) {
+      const spentSince = this.d.db.prepare(
+        "SELECT COALESCE(SUM(usd), 0) AS s FROM executions WHERE pilot_id = ? AND status = 'paper_filled' AND created_at > ?",
+      );
+      const day = 86_400_000;
+      for (const [cap, windowMs] of [
+        [m.budget.daily_usd, day],
+        [m.budget.weekly_usd, 7 * day],
+        [m.budget.monthly_usd, 30 * day],
+      ] as const) {
+        if (!cap) continue;
+        const spent = (spentSince.get(p.id, Date.now() - windowMs) as { s: number }).s;
+        const left = Math.max(0, cap - spent);
+        remainingBudgetUsd = remainingBudgetUsd === null ? left : Math.min(remainingBudgetUsd, left);
+      }
     }
     return { maxTradeUsd: m?.max_trade_usd ?? null, remainingBudgetUsd, minTradeUsd };
   }

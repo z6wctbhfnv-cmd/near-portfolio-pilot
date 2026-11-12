@@ -150,6 +150,14 @@ export function openDb(path: string): Db {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  // Columns added after the first release: add them to databases created before.
+  for (const sql of ["ALTER TABLE pilots ADD COLUMN risk_since INTEGER"]) {
+    try {
+      db.exec(sql);
+    } catch {
+      /* already there */
+    }
+  }
   return db;
 }
 

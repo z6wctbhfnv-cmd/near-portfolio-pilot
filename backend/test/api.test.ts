@@ -141,6 +141,79 @@ describe.skipIf(!wasmBuilt)("paper pilot", () => {
     expect(run2.executions.every((e: { status: string; error_code: string }) => e.status === "blocked" && e.error_code === "mandate_budget")).toBe(true);
   });
 
+  it("lets browsers pause a pilot (CORS allows PATCH) and refuses runs while paused", async () => {
+    const { server, call } = setup();
+    const id = (await call("POST", "/v1/pilots", { name: "Freeze me", strategy: { id: "rebalance", params: { weights: { NEAR: 0.5 } } }, initial_usd: 100 })).body.pilot.id;
+    const pre = await server.inject({ method: "OPTIONS", url: `/v1/pilots/${id}`, headers: { origin: "https://site.example", "access-control-request-method": "PATCH" } });
+    expect(String(pre.headers["access-control-allow-methods"])).toContain("PATCH");
+    expect(String(pre.headers["access-control-allow-methods"])).toContain("PUT");
+    expect((await call("PATCH", `/v1/pilots/${id}`, { paused: true })).body.pilot.status).toBe("paused");
+    const run = await call("POST", `/v1/pilots/${id}/run`);
+    expect(run.status).toBe(409);
+    expect((await call("PATCH", `/v1/pilots/${id}`, { paused: false })).body.pilot.status).toBe("active");
+    expect((await call("POST", `/v1/pilots/${id}/run`)).status).toBe(200);
+  });
+
+  it("drawdown stop: sells to the stablecoin and pauses 20% below the peak; can be switched off", async () => {
+    const { app, agent, call } = setup();
+    const mk = async (name: string, extra: object = {}) =>
+      (
+        await call("POST", "/v1/pilots", {
+          name,
+          strategy: { id: "rebalance", params: { weights: { NEAR: 0.8 } } },
+          mandate: { max_trade_usd: 10_000, budget: { daily_usd: 10_000 }, ...extra },
+          initial_usd: 1000,
+        })
+      ).body.pilot;
+    const on = await mk("Stop on");
+    expect(on.mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.2 });
+    const off = await mk("Stop off", { drawdown_stop: { enabled: false } });
+    for (const p of [on, off]) expect((await call("POST", `/v1/pilots/${p.id}/run`)).body.status).toBe("ok");
+
+    // NEAR halves: the portfolio is ~40% below its peak.
+    agent.prices.NEAR = agent.prices.NEAR! / 2;
+    await app.catalog.all(true);
+
+    const stopped = (await call("POST", `/v1/pilots/${on.id}/run`)).body;
+    expect(stopped.error).toMatch(/drawdown stop/);
+    expect(stopped.executions.map((e: { sell_symbol: string; buy_symbol: string; status: string }) => [e.sell_symbol, e.buy_symbol, e.status])).toEqual([["NEAR", "USDC", "paper_filled"]]);
+    expect(app.pilots.get(on.id)!.status).toBe("paused");
+    expect(Object.keys(app.pilots.get(on.id)!.paper_holdings!).filter((s) => app.pilots.get(on.id)!.paper_holdings![s]! > 1e-9)).toEqual(["USDC"]);
+
+    // Switched off: the strategy keeps running instead.
+    const kept = (await call("POST", `/v1/pilots/${off.id}/run`)).body;
+    expect(kept.error ?? "").not.toMatch(/drawdown stop/);
+    expect(app.pilots.get(off.id)!.status).toBe("active");
+
+    // Resuming restarts the peak, so the stop does not fire again straight away.
+    expect((await call("PATCH", `/v1/pilots/${on.id}`, { paused: false })).body.pilot.status).toBe("active");
+    expect((await call("POST", `/v1/pilots/${on.id}/run`)).body.error ?? "").not.toMatch(/drawdown stop/);
+
+    // The owner can move the level or switch it off later.
+    const moved = (await call("PATCH", `/v1/pilots/${on.id}`, { drawdown_stop: { max_drawdown: 0.3 } })).body.pilot;
+    expect(moved.mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.3 });
+    const offNow = (await call("PATCH", `/v1/pilots/${on.id}`, { drawdown_stop: { enabled: false } })).body.pilot;
+    expect(offNow.mandate.drawdown_stop.enabled).toBe(false);
+  });
+
+  it("keeps paper pilots inside a weekly budget even without a daily one", async () => {
+    const { call } = setup();
+    const id = (
+      await call("POST", "/v1/pilots", {
+        name: "Weekly",
+        strategy: { id: "rebalance", params: { weights: { NEAR: 0.5 } } },
+        mandate: { max_trade_usd: 50, budget: { daily_usd: null, weekly_usd: 120 } },
+        initial_usd: 1000,
+      })
+    ).body.pilot.id;
+    const filled: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const run = (await call("POST", `/v1/pilots/${id}/run`)).body;
+      for (const e of run.executions as Array<{ status: string; usd: number }>) if (e.status === "paper_filled") filled.push(e.usd);
+    }
+    expect(filled).toEqual([50, 50, 20]);
+  });
+
   it("runs trend with cached history and applies an AI review within bounds", async () => {
     const { call, ai } = setup({ NEARAI_API_KEY: "k" });
     ai.answers.push({ risk: "medium", assets: ["NEAR", "BTC"] });

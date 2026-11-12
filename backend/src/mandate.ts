@@ -42,6 +42,14 @@ export const MandateSchema = z.object({
     .object({ id: z.enum(STRATEGY_IDS as [StrategyId, ...StrategyId[]]), params: z.record(z.string(), z.unknown()).default({}) })
     .nullable()
     .default(null),
+  /**
+   * Emergency stop: when the portfolio falls this far below its peak, sell everything to the
+   * stablecoin and pause the pilot until the owner resumes. On by default at 20%; the owner can
+   * change the level or switch it off.
+   */
+  drawdown_stop: z
+    .object({ enabled: z.boolean().default(true), max_drawdown: z.number().min(0.02).max(0.9).default(0.2) })
+    .prefault({}),
 });
 export type Mandate = z.infer<typeof MandateSchema>;
 
@@ -89,6 +97,15 @@ export function parseMandateRules(text: string): { mandate: Mandate; notes: stri
   else notes.push("no per-trade cap stated: 50 USD");
 
   if (/approv|confirm|ask me|подтвержд|спрашива|с моего согласия|согласу/.test(t)) raw.owner_approval = true;
+
+  // Drawdown stop: on at 20% unless the owner names another level or turns it off.
+  const ddm =
+    t.match(/(?:drawdown|draw-down|stop[- ]?loss|просадк\S*|стоп\S*)[^\d%]{0,30}(\d{1,2}(?:[.,]\d+)?)\s*%/) ??
+    t.match(/(\d{1,2}(?:[.,]\d+)?)\s*%[^\d%]{0,20}(?:drawdown|draw-down|просадк\S*)/);
+  const noStop = /no (?:drawdown )?stop|without (?:a )?(?:drawdown )?stop|stop[- ]?loss off|без стоп|без остановк|не останавлива|выключ\S* стоп|отключ\S* стоп/.test(t);
+  if (noStop) raw.drawdown_stop = { enabled: false };
+  else if (ddm) raw.drawdown_stop = { enabled: true, max_drawdown: Number(ddm[1]!.replace(",", ".")) / 100 };
+  else notes.push("no drawdown stop stated: sell to the stablecoin and pause at 20% below the peak");
   if (/weekdays|business days|будн|рабочие дни/.test(t)) {
     raw.schedule = { time_zone: "UTC", days: ["mon", "tue", "wed", "thu", "fri"], start: "00:00", end: "24:00" };
   }
@@ -202,7 +219,9 @@ Return ONLY one JSON object with these optional fields:
  "owner_approval":boolean,
  "timelock_minutes":integer,
  "schedule":null|{"time_zone":"IANA zone","days":["mon".."sun"],"start":"HH:MM","end":"HH:MM"},
- "strategy":null|{"id":"rebalance"|"trend"|"vol_target"|"dca","params":{...}}}
+ "strategy":null|{"id":"rebalance"|"trend"|"vol_target"|"dca","params":{...}},
+ "drawdown_stop":{"enabled":boolean,"max_drawdown":0.02..0.9}}
+drawdown_stop: set only if the user names a stop level (e.g. "stop at -15%" -> {"enabled":true,"max_drawdown":0.15}) or asks for no stop ({"enabled":false}).
 Strategy params: rebalance {"weights":{"NEAR":0.4,...}} (weights 0..1, sum <= 1, rest stays in the stablecoin); trend {"weights",...,"sma_days"}; vol_target {"weights","target_vol"}; dca {"buy":{"NEAR":1},"amount_usd","every_days"}.
 Rules: never invent amounts the user did not give; omit a field instead. Only use the listed assets. No prose, no comments.`;
 

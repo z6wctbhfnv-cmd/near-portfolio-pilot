@@ -49,20 +49,50 @@ def check_attempt(attempt: dict, policy: Policy, now_ms: int = 0) -> dict:
     return {"allowed": False, "http": 403, "body": {"errors": [{"status": "403", "code": d.code, "detail": d.reason}]}}
 
 
-_STOP = set("why what when how did the a an is was were of to in on for and or did does do my it this that".split())
+_STOP = set(("why what when which how did the a an is was were of to in on for and or does do my it this that "
+             "you your yours we our us me pilot agent happen happened happens there they them today yesterday please tell "
+             "explain about with from have has had been can could would should").split())
+_KINDS = {
+    "breaker": ("drawdown", "stop", "breaker", "crash", "freeze", "frozen"),
+    "refused": ("refused", "blocked", "denied", "budget", "limit"),
+    "review": ("fired", "hired", "review", "strategy", "strategies", "allocation", "incubator"),
+    "trade": ("trade", "rebalance", "sold", "bought", "sell", "buy"),
+}
+# Russian question words -> the English terms the chronicle uses.
+_RU = {"просадк": "drawdown", "стоп": "stop", "замороз": "freeze", "отказ": "refused", "лимит": "limit", "уволи": "fired",
+       "наня": "hired", "стратег": "strategy", "ревизи": "review", "продал": "sell", "продаж": "sell", "купил": "buy",
+       "покуп": "buy", "сделк": "trade", "ребаланс": "rebalance"}
+
+
+def _names(question: str) -> list[str]:
+    """Names the question asks about: tickers (BTC), capitalised words not at a sentence start (Mars),
+    strategy ids (momentum-top2@v1), "...coin". If one of them is nowhere in the records, say so."""
+    out = []
+    for m in re.finditer(r"[A-Za-z0-9@-]+", question):
+        w, before = m.group(0), question[:m.start()].rstrip()
+        sentence_start = before == "" or before[-1] in ".!?"
+        if re.fullmatch(r"[A-Z0-9]{2,}", w) and re.search(r"[A-Z]", w) and not re.fullmatch(r"20\d\d", w):
+            out.append(w.lower())
+        elif re.fullmatch(r"[A-Z][a-z]+", w) and not sentence_start:
+            out.append(w.lower())
+        elif re.search(r"@|[a-z]-[a-z0-9]|coin$|token$", w, re.I) and not re.fullmatch(r"20\d\d-\d\d", w):
+            out.append(w.lower())
+    return [w for w in out if w not in _STOP]
 
 
 def ask(question: str, events: list[dict], limit: int = 8) -> dict:
     """Return the logged events that answer the question, newest first. No event, no answer."""
     q = question.lower()
+    for ru, en in _RU.items():
+        if ru in q:
+            q += " " + en
     words = {w for w in re.findall(r"[a-z0-9@\-]+", q) if w not in _STOP and len(w) > 2}
-    kinds = {k for k, keys in {
-        "breaker": ("drawdown", "stop", "breaker", "crash", "freeze", "frozen"),
-        "refused": ("refused", "blocked", "denied", "budget", "limit"),
-        "review": ("fired", "hired", "review", "strategy", "strategies", "allocation", "incubator"),
-        "trade": ("trade", "rebalance", "sold", "bought", "sell", "buy"),
-    }.items() if any(k2 in q for k2 in keys)}
+    kinds = {k for k, keys in _KINDS.items() if any(k2 in q for k2 in keys)}
     month = re.search(r"(20\d\d)-(\d\d)", q)
+    unknown = [n for n in _names(question) if not any(n in e["text"].lower() for e in events)]
+    if unknown:
+        named = ", ".join(f"“{n}”" for n in unknown)
+        return {"answer": f"Nothing in Pilot's records mentions {named}. Pilot only answers from its own records.", "events": []}
     scored = []
     for e in events:
         text = e["text"].lower()

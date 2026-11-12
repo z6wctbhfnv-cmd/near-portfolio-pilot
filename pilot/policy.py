@@ -146,10 +146,11 @@ class Mandate:
     stable_weight: float = 0.5  # USDC parked in a yield vault token
     gold_weight: float = 0.1  # XAUT
     crypto_weight: float = 0.4  # managed by strategies (BTC, ETH, SOL, NEAR or cash)
-    max_drawdown: float = 0.10  # breach -> everything to USDC, freeze until the owner resumes
+    max_drawdown: float = 0.10  # breach -> everything to USDC, freeze until the owner resumes (rules default: 20%)
     # "episode": the limit applies to each fall; after the owner resumes, the peak restarts.
     # "from_peak": never below (1 - max_drawdown) of the all-time peak; after resuming, risk is scaled
     #              down to the buffer that is left, so a second fall cannot break the floor.
+    # "off": the owner switched the stop off; nothing is sold on a fall.
     drawdown_mode: str = "episode"
     rebalance_band: float = 0.03  # trade only when an asset drifts more than this share of equity
     stable_apy: float = 0.04  # assumption for the vault token yield, not a promise
@@ -158,5 +159,5 @@ class Mandate:
         total = self.stable_weight + self.gold_weight + self.crypto_weight
         if abs(total - 1) > 1e-9:
             raise ValueError(f"mandate weights must sum to 1, got {total}")
-        if self.drawdown_mode not in ("episode", "from_peak"):
-            raise ValueError("drawdown_mode must be 'episode' or 'from_peak'")
+        if self.drawdown_mode not in ("episode", "from_peak", "off"):
+            raise ValueError("drawdown_mode must be 'episode', 'from_peak' or 'off'")

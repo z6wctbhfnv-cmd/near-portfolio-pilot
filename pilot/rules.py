@@ -18,7 +18,9 @@ _ACCOUNT = r"([a-z0-9_\-]+(?:\.[a-z0-9_\-]+)*\.(?:near|tg)|0x[a-f0-9]{40}|[a-f0-
 
 _STABLE = r"(?:stable(?:coin)?s?|usdc|usdt|cash|стейбл\w*|кэш)"
 _GOLD = r"(?:gold|xaut|paxg|золот\w*)"
-_CRYPTO = r"(?:crypto|btc|bitcoin|eth|ether\w*|sol|solana|крипт\w*)"
+_CRYPTO_ALL = r"(?:crypto|крипт\w*)"
+# Single coins count towards the crypto part: "40% NEAR, 30% BTC" is 70% crypto.
+_CRYPTO_COINS = r"(?:btc|bitcoin|eth|ether\w*|sol|solana|near)"
 
 
 @dataclass
@@ -46,11 +48,28 @@ def _weight(text: str, asset_re: str) -> float | None:
     return None
 
 
+def _weights(text: str, asset_re: str) -> list[float]:
+    """Every "<n>% <asset>" / "<asset> <n>%" mention, each number counted once (by its position)."""
+    found: dict[int, float] = {}
+    for pat in (rf"{_PCT}\s*(?:in|into|to|of|on|в|на)?\s*(?:the\s+)?{asset_re}", rf"{asset_re}\s*[:\-–]?\s*{_PCT}"):
+        for m in re.finditer(pat, text):
+            found[m.start(1)] = _num(m.group(1)) / 100
+    return list(found.values())
+
+
 def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
     t = text.lower()
     warnings: list[str] = []
 
-    w = {"stable": _weight(t, _STABLE), "gold": _weight(t, _GOLD), "crypto": _weight(t, _CRYPTO)}
+    # "40% crypto" wins; otherwise single coins are added up ("40% NEAR, 30% BTC" -> 70% crypto).
+    crypto = _weight(t, _CRYPTO_ALL)
+    if crypto is None:
+        coins = _weights(t, _CRYPTO_COINS)
+        if coins:
+            crypto = sum(coins)
+        if len(coins) > 1:
+            warnings.append(f"the coins you listed add up to {crypto:.0%} crypto; how it is split between them is up to the strategy scripts.")
+    w = {"stable": _weight(t, _STABLE), "gold": _weight(t, _GOLD), "crypto": crypto}
     given = {k: v for k, v in w.items() if v is not None}
     if sum(given.values()) > 1 + 1e-9:
         raise ValueError(f"weights add up to {sum(given.values()):.0%}, more than 100%")
@@ -67,15 +86,18 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
         w["stable"] += rest
         warnings.append(f"weights added up to {1 - rest:.0%}; the remaining {rest:.0%} goes to stablecoins.")
 
-    dd = 0.10
-    m = re.search(rf"(?:drawdown|draw-down|loss|lose|просадк\w*|убыт\w*)[^\d%]{{0,30}}{_PCT}", t) or \
+    dd = 0.20
+    no_stop = re.search(r"no (?:drawdown )?stop|without (?:a )?(?:drawdown )?stop|stop[- ]?loss off|без стоп|без остановк|выключ\w* стоп|отключ\w* стоп", t)
+    m = None if no_stop else re.search(rf"(?:drawdown|draw-down|loss|lose|просадк\w*|убыт\w*)[^\d%]{{0,30}}{_PCT}", t) or \
         re.search(rf"{_PCT}[^\d%]{{0,20}}(?:drawdown|loss|просадк\w*)", t)
     if m:
         dd = _num(m.group(1)) / 100
+    elif no_stop:
+        warnings.append("drawdown stop is off: on a crash nothing is sold automatically.")
     else:
-        warnings.append("no drawdown limit found: using 10%.")
-    if not 0.02 <= dd <= 0.5:
-        raise ValueError("drawdown limit must be between 2% and 50%")
+        warnings.append("no drawdown limit found: using 20%.")
+    if not 0.02 <= dd <= 0.9:
+        raise ValueError("drawdown limit must be between 2% and 90%")
 
     daily = None
     m = re.search(rf"{_MONEY}\s*(?:per day|a day|daily|/day|в день|за день)", t) or \
@@ -100,6 +122,12 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
     else:
         warnings.append("no withdrawal rule found: the agent can only swap, nothing can leave the wallet.")
 
+    understood = bool(given) or bool(no_stop) or bool(re.search(rf"(?:drawdown|draw-down|loss|lose|просадк\w*|убыт\w*)[^\d%]{{0,30}}{_PCT}|{_PCT}[^\d%]{{0,20}}(?:drawdown|loss|просадк\w*)", t)) \
+        or daily is not None or per_tx is not None or bool(destinations) \
+        or bool(re.search(r"never send|no withdraw|nothing (?:leaves|out)|никуда не выводить|не выводить", t))
+    if not understood:
+        raise ValueError("couldn't find any rule in this text. Try: “40% crypto, max drawdown 10%, $500 a day”")
+
     # Finding from the simulation: the budget also counts emergency sells, so it must cover a full exit.
     if daily is None:
         daily = round(portfolio_usd * 1.2, 2)
@@ -112,7 +140,7 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
 
     mandate = Mandate(stable_weight=round(w["stable"], 4), gold_weight=round(w["gold"], 4),
                       crypto_weight=round(1 - round(w["stable"], 4) - round(w["gold"], 4), 4), max_drawdown=dd,
-                      drawdown_mode="from_peak" if re.search(r"all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска)", t) else "episode")
+                      drawdown_mode="off" if no_stop else "from_peak" if re.search(r"all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска)", t) else "episode")
     policy = Policy(actions=tuple(actions), per_transaction_usd=per_tx, daily_usd=daily,
                     destinations=frozenset(destinations))
     api_policy = policy.to_agent_api(ASSET_IDS)
@@ -124,7 +152,8 @@ def compile_rules(text: str, portfolio_usd: float = 10_000.0) -> Compiled:
         f"{mandate.stable_weight:.0%} in stablecoins earning vault yield",
         f"{mandate.gold_weight:.0%} in gold (XAUT)",
         f"{mandate.crypto_weight:.0%} in crypto, managed by strategy scripts",
-        f"If the portfolio falls {dd:.0%} from its peak: sell everything to USDC and freeze until you resume",
+        ("No drawdown stop: you switched it off" if no_stop else
+         f"If the portfolio falls {dd:.0%} from its peak: sell everything to USDC and freeze until you resume"),
         f"At most ${per_tx:,.0f} per swap and ${daily:,.0f} of swaps per day",
         ("Withdrawals only to " + ", ".join(destinations)) if destinations else "The agent can only swap: no transfers or withdrawals",
         "You can freeze the agent at any moment; freezing is never delayed",

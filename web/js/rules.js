@@ -7,7 +7,9 @@ const MONEY = String.raw`\$?\s*(\d[\d,\s]*(?:\.\d+)?)\s*(k)?\s*(?:usd|usdc|\$|do
 const ACCOUNT = String.raw`([a-z0-9_\-]+(?:\.[a-z0-9_\-]+)*\.(?:near|tg)|0x[a-f0-9]{40}|[a-f0-9]{64})`;
 const STABLE = String.raw`(?:stable(?:coin)?s?|usdc|usdt|cash|стейбл\S*|кэш)`;
 const GOLD = String.raw`(?:gold|xaut|paxg|золот\S*)`;
-const CRYPTO = String.raw`(?:crypto|btc|bitcoin|eth|ether\S*|sol|solana|крипт\S*)`;
+const CRYPTO_ALL = String.raw`(?:crypto|крипт\S*)`;
+// Single coins count towards the crypto part: "40% NEAR, 30% BTC" is 70% crypto.
+const CRYPTO_COINS = String.raw`(?:btc|bitcoin|eth|ether\S*|sol|solana|near)`;
 
 const num = (s) => Number(s.replace(",", ".").replace(/\s/g, ""));
 const money = (m) => Number(m[1].replace(/[,\s]/g, "")) * (m[2] ? 1000 : 1);
@@ -18,6 +20,15 @@ function weight(text, asset) {
     if (m) return num(m[1]) / 100;
   }
   return null;
+}
+
+// Every "<n>% <asset>" / "<asset> <n>%" mention, each number counted once (by its position).
+function weights(text, asset) {
+  const found = new Map();
+  for (const pat of [`${PCT}\\s*(?:in|into|to|of|on|в|на)?\\s*(?:the\\s+)?${asset}`, `${asset}\\s*[:\\-–]?\\s*${PCT}`]) {
+    for (const m of text.matchAll(new RegExp(pat, "gu"))) found.set(m.index + m[0].indexOf(m[1]), num(m[1]) / 100);
+  }
+  return [...found.values()];
 }
 
 const first = (t, ...pats) => {
@@ -31,7 +42,14 @@ const first = (t, ...pats) => {
 export function compileRules(text, portfolioUsd = 10_000) {
   const t = text.toLowerCase();
   const warnings = [];
-  const w = { stable: weight(t, STABLE), gold: weight(t, GOLD), crypto: weight(t, CRYPTO) };
+  // "40% crypto" wins; otherwise single coins are added up ("40% NEAR, 30% BTC" -> 70% crypto).
+  let crypto = weight(t, CRYPTO_ALL);
+  if (crypto === null) {
+    const coins = weights(t, CRYPTO_COINS);
+    if (coins.length) crypto = coins.reduce((a, b) => a + b, 0);
+    if (coins.length > 1) warnings.push(`the coins you listed add up to ${pct(crypto)} crypto; how it is split between them is up to the strategy scripts.`);
+  }
+  const w = { stable: weight(t, STABLE), gold: weight(t, GOLD), crypto };
   const given = Object.values(w).filter((v) => v !== null).reduce((a, b) => a + b, 0);
   if (given > 1 + 1e-9) throw new Error(`weights add up to ${Math.round(given * 100)}%, more than 100%`);
   const missing = Object.keys(w).filter((k) => w[k] === null);
@@ -46,13 +64,15 @@ export function compileRules(text, portfolioUsd = 10_000) {
     warnings.push(`weights added up to ${pct(1 - rest)}; the remaining ${pct(rest)} goes to stablecoins.`);
   }
 
-  let dd = 0.1;
-  const ddm = first(t, `(?:drawdown|draw-down|loss|lose|просадк\\S*|убыт\\S*)[^\\d%]{0,30}${PCT}`, `${PCT}[^\\d%]{0,20}(?:drawdown|loss|просадк\\S*)`);
+  let dd = 0.2;
+  const noStop = /no (?:drawdown )?stop|without (?:a )?(?:drawdown )?stop|stop[- ]?loss off|без стоп|без остановк|выключ\S* стоп|отключ\S* стоп/u.test(t);
+  const ddm = noStop ? null : first(t, `(?:drawdown|draw-down|loss|lose|просадк\\S*|убыт\\S*)[^\\d%]{0,30}${PCT}`, `${PCT}[^\\d%]{0,20}(?:drawdown|loss|просадк\\S*)`);
   if (ddm) dd = num(ddm[1]) / 100;
-  else warnings.push("no drawdown limit found: using 10%.");
-  if (dd < 0.02 || dd > 0.5) throw new Error("drawdown limit must be between 2% and 50%");
+  else if (noStop) warnings.push("drawdown stop is off: on a crash nothing is sold automatically.");
+  else warnings.push("no drawdown limit found: using 20%.");
+  if (dd < 0.02 || dd > 0.9) throw new Error("drawdown limit must be between 2% and 90%");
   // "never below 90% of the peak" / "от максимума" / "ever" -> one floor from the all-time peak.
-  const ddMode = /(?:all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска))/.test(t) ? "from_peak" : "episode";
+  const ddMode = noStop ? "off" : /(?:all[- ]time|\bever\b|never (?:lose|fall|drop)|from (?:the )?(?:all-time )?peak|от максимума|никогда не (?:теря|пада|опуска))/.test(t) ? "from_peak" : "episode";
 
   const dm = first(t, `${MONEY}\\s*(?:per day|a day|daily|/day|в день|за день)`, `(?:daily|per day|в день)[^\\d$]{0,25}${MONEY}`);
   let daily = dm ? money(dm) : null;
@@ -75,6 +95,10 @@ export function compileRules(text, portfolioUsd = 10_000) {
     warnings.push(`daily budget $${fmt(daily)} is below the portfolio value $${fmt(portfolioUsd)}: in a crash the drawdown stop could not sell everything in one day.`);
   if (perTx === null) perTx = Math.round(Math.max(100, Math.min(daily, portfolioUsd * 0.1)) * 100) / 100;
 
+  // Nothing recognised at all: refuse rather than sign a policy the owner never wrote.
+  const understood = given > 0 || noStop || ddm || dm || pm || wm || /never send|no withdraw|nothing (?:leaves|out)|никуда не выводить|не выводить/u.test(t);
+  if (!understood) throw new Error("couldn't find any rule in this text. Try: “40% crypto, max drawdown 10%, $500 a day”");
+
   const r4 = (x) => Math.round(x * 1e4) / 1e4;
   const mandate = { stable_weight: r4(w.stable), gold_weight: r4(w.gold), crypto_weight: r4(1 - r4(w.stable) - r4(w.gold)), max_drawdown: dd, drawdown_mode: ddMode };
   const policy = defaultPolicy({ actions, perTransactionUsd: perTx, dailyUsd: daily, destinations });
@@ -82,7 +106,9 @@ export function compileRules(text, portfolioUsd = 10_000) {
     `${pct(mandate.stable_weight)} in stablecoins earning vault yield`,
     `${pct(mandate.gold_weight)} in gold (XAUT)`,
     `${pct(mandate.crypto_weight)} in crypto, managed by strategy scripts`,
-    ddMode === "from_peak"
+    ddMode === "off"
+      ? "No drawdown stop: you switched it off"
+      : ddMode === "from_peak"
       ? `Never below ${pct(1 - dd)} of the all-time peak: at the floor sell everything to USDC and freeze; after you resume, risk shrinks with the buffer left`
       : `If the portfolio falls ${pct(dd)} from its peak: sell everything to USDC and freeze until you resume; the limit restarts after each resume`,
     `At most $${fmt(perTx)} per swap and $${fmt(daily)} of swaps per day`,
