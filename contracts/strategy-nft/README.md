@@ -47,7 +47,7 @@ The recorder also credits fees that agents withdrew to the contract (`record_fee
 ```bash
 cd contracts/strategy-nft
 cargo test                              # 54 unit tests
-cargo near build non-reproducible-wasm  # target/near/strategy_nft.wasm
+cargo near build non-reproducible-wasm --no-abi  # target/near/strategy_nft.wasm (ABI generation fails on StrategyInfo/Checkpoint)
 ```
 
 ## Testnet accounts

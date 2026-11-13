@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { Area } from "./Area";
 import { Change } from "./ui";
 import { NftActionSheet, useNftWallet, type NftAction } from "./nftWallet";
-import { nearToYocto, yoctoToNearExact, periodStats, recordChange, scriptTitle, simulatedRecord, yoctoToNear, type OpenParam } from "@/lib/chain";
+import { offersOn, type Offer, nearToYocto, yoctoToNearExact, periodStats, recordChange, scriptTitle, simulatedRecord, yoctoToNear, type OpenParam } from "@/lib/chain";
 import { NFT, explorerAccount } from "@/lib/config";
 import { sha256 } from "@/lib/scriptCheck";
 import type { LeaderRow } from "@/lib/useLeaderboard";
@@ -65,6 +65,11 @@ export function ScriptSheetBody({ row, days, periodLabel, onChanged }: { row: Le
   const change = c ? recordChange(c.record) : null;
   const bondOk = c ? c.bond.held >= c.bond.required : false;
   const runnable = /^wasm-(rebalance|trend|vol-target|dca)@/.test(row.id);
+  const [offers, setOffers] = useState<Offer[] | null | undefined>(undefined);
+  const [bid, setBid] = useState("");
+  const loadOffers = () => { offersOn(row.id).then(setOffers).catch(() => setOffers(undefined)); };
+  useEffect(loadOffers, [row.id]);
+  const mine = offers?.find((o) => o.account === accountId);
   const [copy, setCopy] = useState<{ busy: boolean; ok?: boolean; text?: string }>({ busy: false });
   const doCopy = async () => {
     const pid = currentPilotId();
@@ -174,6 +179,53 @@ export function ScriptSheetBody({ row, days, periodLabel, onChanged }: { row: Le
             </motion.button>
           )
         ) : <p className="rounded-[16px] bg-card2 px-4 py-3 text-[15px] text-dim">Not for sale right now.{c ? <> Holder: <b className="text-ink">{short(c.holder, 12)}</b>.</> : null}</p>}
+
+        <div className="mt-3 rounded-[18px] bg-card2 p-4">
+          <p className="text-[15px] font-semibold">Offers</p>
+          <p className="mt-0.5 text-[13px] leading-snug text-dim">Offer your own price, listed or not. Your NEAR waits in the contract until the holder accepts or you cancel.</p>
+          {offers === null ? (
+            <p className="mt-3 rounded-[14px] bg-white px-3 py-2 text-[14px] text-dim">Offers open after the NFT contract upgrade (make_offer / accept_offer). The code is ready; the contract owner has to deploy it.</p>
+          ) : (
+            <>
+              {offers && offers.length > 0 ? (
+                <ul className="mt-3 flex flex-col gap-2">
+                  {offers.slice(0, 6).map((o, k) => (
+                    <li key={o.account} className="flex items-center gap-3 rounded-[14px] bg-white px-3 py-2.5">
+                      {k === 0 && <span className="shrink-0 rounded-full bg-yel px-2 py-0.5 text-[11px] font-bold text-white">best</span>}
+                      <span className="min-w-0 flex-1 truncate text-[14px]">{short(o.account, 12)}</span>
+                      <span className="num shrink-0 text-[15px] font-semibold">{yoctoToNear(o.yocto)} NEAR</span>
+                      {holderView && o.account !== c?.holder && (
+                        <button className="shrink-0 rounded-[10px] bg-yel px-3 py-1.5 text-[13px] font-semibold text-white"
+                          onClick={() => setAction({ title: `Sell to ${short(o.account, 10)} for ${yoctoToNear(o.yocto)} NEAR`, method: "accept_offer", args: { token_id: row.id, bidder: o.account, amount: o.yocto }, deposit: "0", who,
+                            why: `The NFT, its record and its future copy fees move to ${o.account}. You get 99.5% of ${yoctoToNear(o.yocto)} NEAR, Pilot 0.5%. If they changed the offer meanwhile, the contract refuses and nothing moves.` })}>
+                          Accept
+                        </button>
+                      )}
+                      {o.account === accountId && (
+                        <button className="shrink-0 rounded-[10px] bg-card2 px-3 py-1.5 text-[13px] font-semibold text-dim"
+                          onClick={() => setAction({ title: "Cancel my offer", method: "cancel_offer", args: { token_id: row.id }, deposit: "0",
+                            why: "Your offered NEAR and its storage come back to you." })}>
+                          Cancel
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : offers ? <p className="mt-3 text-[14px] text-dim">No offers yet.</p> : null}
+              {!isHolder && (
+                <div className="mt-3 flex gap-2">
+                  <input type="number" min={0.01} step={0.5} value={bid} onChange={(e) => setBid(e.target.value)} placeholder={mine ? `Your offer: ${yoctoToNear(mine.yocto)} NEAR` : "Your price in NEAR"}
+                    className="num min-w-0 flex-1 rounded-[12px] bg-white px-3 py-2 text-[16px] outline-none focus:ring-2 focus:ring-yel" />
+                  <button disabled={!(Number(bid) >= 0.01)} className="rounded-[12px] bg-yel px-4 font-semibold text-white disabled:opacity-40"
+                    onClick={() => setAction({ title: `Offer ${Number(bid)} NEAR for ${scriptTitle(row.id)}`, method: "make_offer", args: { token_id: row.id }, deposit: (Number(bid) + 0.005).toFixed(3),
+                      why: `${Number(bid)} NEAR is held by the contract until the holder accepts (you get the NFT, its record and its copy fees) or you cancel (it all comes back). About 0.005 NEAR covers the offer’s storage and is returned when the offer ends.${mine ? " This replaces your current offer; the old amount comes back." : ""}` })}>
+                    {mine ? "Change" : "Offer"}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </Section>
 
       {c && (
@@ -231,7 +283,7 @@ export function ScriptSheetBody({ row, days, periodLabel, onChanged }: { row: Le
           )}
         </Section>
       )}
-      <NftActionSheet action={action} onClose={() => setAction(null)} onDone={onChanged} />
+      <NftActionSheet action={action} onClose={() => setAction(null)} onDone={() => { onChanged(); loadOffers(); }} />
     </div>
   );
 }

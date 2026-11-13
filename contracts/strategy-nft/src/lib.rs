@@ -72,6 +72,8 @@ pub const PLATFORM_FEE_BPS: u128 = 25;
 pub const REFERRAL_FEE_BPS: u128 = 10;
 /// Pilot's share of an NFT sale price, in basis points; the seller gets the rest (99.5%).
 pub const SALE_FEE_BPS: u128 = 50;
+/// Smallest offer, after its storage is taken from the deposit: 0.01 NEAR.
+pub const MIN_OFFER_YOCTO: u128 = 10_000_000_000_000_000_000_000;
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_RESOLVE: Gas = Gas::from_tgas(10);
 const GAS_BALANCE_OF: Gas = Gas::from_tgas(5);
@@ -108,6 +110,10 @@ enum StorageKey {
     FeesPaid,
     Listings,
     Referrers,
+    // Appended last so the prefixes above keep their Borsh indices (no state migration).
+    Offers,
+    OfferSet { token_hash: Vec<u8> },
+    OfferSets,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -367,6 +373,92 @@ impl Contract {
             Promise::new(buyer.clone()).transfer(NearToken::from_yoctonear(deposit - price)).detach();
         }
         env::log_str(&format!("sold {token_id} from {seller} to {buyer} for {price} yoctoNEAR"));
+    }
+
+    /// Offer to buy a script NFT at your own price, whether it is listed or not. The attached NEAR is
+    /// held by the contract until the holder accepts it or you cancel. One offer per account and
+    /// script: a new offer replaces yours and the old amount comes back. The offer's storage is taken
+    /// from the deposit and returned when the offer ends.
+    #[payable]
+    pub fn make_offer(&mut self, token_id: TokenId) -> U128 {
+        let bidder = env::predecessor_account_id();
+        let owner = self.tokens.owner_by_id.get(&token_id).unwrap_or_else(|| env::panic_str("unknown strategy"));
+        require!(owner != bidder, "you hold this script");
+        let deposit = env::attached_deposit().as_yoctonear();
+        let key = (token_id.clone(), bidder.clone());
+        let mut amounts = offer_amounts();
+        let previous = amounts.get(&key).copied().unwrap_or(0);
+        let before = env::storage_usage();
+        amounts.insert(key.clone(), 0);
+        amounts.flush();
+        let mut sets = offer_sets();
+        if !sets.contains_key(&token_id) {
+            sets.insert(token_id.clone(), IterableSet::new(StorageKey::OfferSet { token_hash: env::sha256(token_id.as_bytes()) }));
+        }
+        sets.get_mut(&token_id).unwrap().insert(bidder.clone());
+        sets.flush();
+        let storage = env::storage_byte_cost().as_yoctonear() * env::storage_usage().saturating_sub(before) as u128;
+        require!(
+            deposit >= storage + MIN_OFFER_YOCTO,
+            format!("attach at least {} yoctoNEAR: the offer plus {} for storage", storage + MIN_OFFER_YOCTO, storage)
+        );
+        let amount = deposit - storage;
+        amounts.insert(key, amount);
+        amounts.flush();
+        if previous > 0 {
+            Promise::new(bidder.clone()).transfer(NearToken::from_yoctonear(previous)).detach();
+        }
+        env::log_str(&format!("offer {amount} yoctoNEAR for {token_id} by {bidder}"));
+        U128(amount)
+    }
+
+    /// Withdraw your offer: the held NEAR and its storage come back.
+    pub fn cancel_offer(&mut self, token_id: TokenId) -> U128 {
+        let bidder = env::predecessor_account_id();
+        let (amount, freed) = take_offer(&token_id, &bidder);
+        Promise::new(bidder.clone()).transfer(NearToken::from_yoctonear(amount + freed)).detach();
+        env::log_str(&format!("offer for {token_id} by {bidder} cancelled"));
+        U128(amount)
+    }
+
+    /// The holder accepts an offer. `amount` must equal the offer now (it guards against an offer
+    /// replaced in the meantime). The NFT, its record and its future copy fees move to the bidder;
+    /// the seller gets 99.5%, Pilot 0.5%, as with `buy`. A listing for the script is removed.
+    pub fn accept_offer(&mut self, token_id: TokenId, bidder: AccountId, amount: U128) {
+        let seller = env::predecessor_account_id();
+        let owner = self.tokens.owner_by_id.get(&token_id).unwrap_or_else(|| env::panic_str("unknown strategy"));
+        require!(owner == seller, "only the holder can accept an offer");
+        require!(bidder != seller, "already yours");
+        let (price, freed) = take_offer(&token_id, &bidder);
+        require!(price == amount.0, "the offer changed: reload it and try again");
+        self.listings.remove(&token_id);
+        self.tokens.internal_transfer(&seller, &bidder, &token_id, None, Some("pilot offer".to_string()));
+        self.release_bond(&token_id, &seller);
+        let fee = price * SALE_FEE_BPS / 10_000;
+        Promise::new(seller.clone()).transfer(NearToken::from_yoctonear(price - fee)).detach();
+        if fee > 0 {
+            Promise::new(self.treasury.clone()).transfer(NearToken::from_yoctonear(fee)).detach();
+        }
+        if freed > 0 {
+            Promise::new(bidder.clone()).transfer(NearToken::from_yoctonear(freed)).detach();
+        }
+        env::log_str(&format!("sold {token_id} from {seller} to {bidder} for {price} yoctoNEAR (offer)"));
+    }
+
+    /// Open offers for a script: (bidder, yoctoNEAR held), in the order they were made.
+    pub fn offers(&self, token_id: TokenId, from_index: Option<u32>, limit: Option<u32>) -> Vec<(AccountId, U128)> {
+        let amounts = offer_amounts();
+        let sets = offer_sets();
+        let Some(set) = sets.get(&token_id) else { return vec![] };
+        set.iter()
+            .skip(from_index.unwrap_or(0) as usize)
+            .take(limit.unwrap_or(50).min(100) as usize)
+            .map(|a| (a.clone(), U128(amounts.get(&(token_id.clone(), a.clone())).copied().unwrap_or(0))))
+            .collect()
+    }
+
+    pub fn offer_of(&self, token_id: TokenId, account: AccountId) -> Option<U128> {
+        offer_amounts().get(&(token_id, account)).map(|a| U128(*a))
     }
 
     /// The holder replaces the script's code. The record restarts from zero (old checkpoints are no longer
@@ -759,6 +851,32 @@ impl Contract {
 }
 
 /// Charge the caller for the storage added since `before` out of the attached deposit, refund the rest.
+fn offer_amounts() -> LookupMap<(TokenId, AccountId), u128> {
+    LookupMap::new(StorageKey::Offers)
+}
+
+/// Bidders per script. Each set is stored inside this map, so its length survives between calls.
+fn offer_sets() -> LookupMap<TokenId, IterableSet<AccountId>> {
+    LookupMap::new(StorageKey::OfferSets)
+}
+
+/// Removes `bidder`'s offer on `token_id`: (amount held, yoctoNEAR of storage freed).
+fn take_offer(token_id: &TokenId, bidder: &AccountId) -> (u128, u128) {
+    let key = (token_id.clone(), bidder.clone());
+    let mut amounts = offer_amounts();
+    let amount = amounts.get(&key).copied().unwrap_or_else(|| env::panic_str("no such offer"));
+    let before = env::storage_usage();
+    amounts.remove(&key);
+    amounts.flush();
+    let mut sets = offer_sets();
+    if let Some(set) = sets.get_mut(token_id) {
+        set.remove(bidder);
+    }
+    sets.flush();
+    let freed = env::storage_byte_cost().as_yoctonear() * before.saturating_sub(env::storage_usage()) as u128;
+    (amount, freed)
+}
+
 fn charge_storage(before: u64, payer: &AccountId) {
     let added = env::storage_usage().saturating_sub(before) as u128;
     let cost = env::storage_byte_cost().saturating_mul(added);
@@ -1646,5 +1764,99 @@ mod tests {
         assert_eq!(record(&mut c, accounts(2), 2_500_000, "sha256:02"), 2_500_000);
         assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
         assert_eq!(c.fee_balance(accounts(5), usdc()).0, 4_000_000);
+    }
+
+    // ------------------------------------------------------------ offers
+
+    const TOKEN: &str = "trend-sma@v1";
+
+    fn offer(c: &mut Contract, who: AccountId, near_milli: u128) -> u128 {
+        ctx(who, near_milli);
+        c.make_offer(TOKEN.into()).0
+    }
+
+    #[test]
+    fn an_offer_holds_the_deposit_minus_storage() {
+        let mut c = setup();
+        let held = offer(&mut c, accounts(3), 2_000); // 2 NEAR
+        let two = NearToken::from_near(2).as_yoctonear();
+        assert!(held < two && held > two - NearToken::from_millinear(10).as_yoctonear(), "held {held}");
+        assert_eq!(c.offers(TOKEN.into(), None, None), vec![(accounts(3), U128(held))]);
+        assert_eq!(c.offer_of(TOKEN.into(), accounts(3)), Some(U128(held)));
+    }
+
+    #[test]
+    fn a_new_offer_replaces_the_old_one() {
+        let mut c = setup();
+        offer(&mut c, accounts(3), 1_000);
+        let second = offer(&mut c, accounts(3), 3_000);
+        // No new storage on the second offer: the whole deposit is the offer.
+        assert_eq!(second, NearToken::from_near(3).as_yoctonear());
+        assert_eq!(c.offers(TOKEN.into(), None, None).len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "you hold this script")]
+    fn the_holder_cannot_offer_on_its_own_script() {
+        let mut c = setup();
+        offer(&mut c, accounts(2), 1_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "attach at least")]
+    fn a_tiny_offer_is_refused() {
+        let mut c = setup();
+        offer(&mut c, accounts(3), 5); // 0.005 NEAR
+    }
+
+    #[test]
+    fn accepting_moves_the_nft_and_clears_the_offer_and_listing() {
+        let mut c = setup();
+        list(&mut c, 9_000_000);
+        let held = offer(&mut c, accounts(3), 1_500);
+        offer(&mut c, accounts(4), 1_000);
+        ctx(accounts(2), 0);
+        c.accept_offer(TOKEN.into(), accounts(3), U128(held));
+        assert_eq!(c.revenue_receiver(TOKEN.into()), Some(accounts(3)));
+        assert_eq!(c.sale_price(TOKEN.into()), None);
+        assert_eq!(c.offer_of(TOKEN.into(), accounts(3)), None);
+        // The other offer stands, now addressed to the new holder.
+        assert_eq!(c.offers(TOKEN.into(), None, None).len(), 1);
+        assert_eq!(c.strategy_info(TOKEN.into()).unwrap().author, accounts(2));
+    }
+
+    #[test]
+    #[should_panic(expected = "the offer changed")]
+    fn accept_checks_the_amount() {
+        let mut c = setup();
+        let held = offer(&mut c, accounts(3), 1_500);
+        ctx(accounts(2), 0);
+        c.accept_offer(TOKEN.into(), accounts(3), U128(held + 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the holder can accept")]
+    fn only_the_holder_accepts() {
+        let mut c = setup();
+        let held = offer(&mut c, accounts(3), 1_500);
+        ctx(accounts(4), 0);
+        c.accept_offer(TOKEN.into(), accounts(3), U128(held));
+    }
+
+    #[test]
+    fn cancel_returns_the_offer() {
+        let mut c = setup();
+        let held = offer(&mut c, accounts(3), 1_000);
+        ctx(accounts(3), 0);
+        assert_eq!(c.cancel_offer(TOKEN.into()).0, held);
+        assert!(c.offers(TOKEN.into(), None, None).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "no such offer")]
+    fn cancel_without_an_offer_fails() {
+        let mut c = setup();
+        ctx(accounts(3), 0);
+        c.cancel_offer(TOKEN.into());
     }
 }

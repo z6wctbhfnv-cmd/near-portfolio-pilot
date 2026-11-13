@@ -109,6 +109,21 @@ export const nearToYocto = (n: number) => (BigInt(Math.round(n * 1000)) * 10n **
 /** "referrer_of" for any account, null when none. */
 export const referrerOf = (account: string) => view<string | null>("referrer_of", { account });
 
+export type Offer = { account: string; yocto: string };
+/**
+ * Open offers on a script, highest first. null = the deployed contract has no offers yet
+ * (it needs the upgrade with make_offer / accept_offer).
+ */
+export async function offersOn(tokenId: string): Promise<Offer[] | null> {
+  try {
+    const rows = await view<Array<[string, string]>>("offers", { token_id: tokenId, from_index: 0, limit: 100 });
+    return rows.map(([account, yocto]) => ({ account, yocto })).sort((a, b) => (BigInt(b.yocto) > BigInt(a.yocto) ? 1 : -1));
+  } catch (e) {
+    if (/MethodNotFound|MethodResolveError|not found|CompilationError/i.test(String((e as Error).message))) return null;
+    throw e;
+  }
+}
+
 /* ---------- backtests (web/data/report.json, exported to public/backtests.json) ---------- */
 export type Backtested = { id: string; doc: string; uses_perps: boolean; record_return: number; record_max_drawdown: number; daily_returns: number[]; daily_start: number; periods: Record<string, number>; params: Record<string, unknown> };
 
