@@ -93,3 +93,39 @@ describe("strategy NFT checkpoints", () => {
     expect(await publishCheckpoints(db, nft, now)).toEqual([]);
   });
 });
+
+describe("chain views over a flaky public RPC", () => {
+  const answer = (v: unknown) => new Response(JSON.stringify({ jsonrpc: "2.0", id: "pilot", result: { result: [...Buffer.from(JSON.stringify(v))] } }), { headers: { "content-type": "application/json" } });
+  const nft = (rpcUrl: string, f: typeof fetch) => new NftPublisher({ contract: "nft.testnet", rpcUrl, fetch: f });
+
+  it("retries a rate limit and a dropped connection, alternating with the second endpoint", async () => {
+    const seen: string[] = [];
+    const f = (async (url: string) => {
+      seen.push(String(url));
+      if (seen.length === 1) return new Response("slow down", { status: 429 });
+      if (seen.length === 2) throw new TypeError("fetch failed");
+      return answer("holder.testnet");
+    }) as unknown as typeof fetch;
+    expect(await nft("https://test.rpc.fastnear.com", f).revenueReceiver("x@v1")).toBe("holder.testnet");
+    expect(seen).toEqual(["https://test.rpc.fastnear.com", "https://rpc.testnet.near.org", "https://test.rpc.fastnear.com"]);
+  });
+
+  it("treats an answer from the chain as final, and never adds an endpoint next to a private RPC", async () => {
+    let calls = 0;
+    const f = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "pilot", result: { error: "wasm execution failed with error: MethodResolveError(MethodNotFound)" } }), { headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    await expect(nft("https://test.rpc.fastnear.com", f).view("offers", { token_id: "x@v1" })).rejects.toThrow(/MethodNotFound/);
+    expect(calls).toBe(1);
+
+    const seen: string[] = [];
+    const down = (async (url: string) => {
+      seen.push(String(url));
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(nft("https://rpc.internal.example", down).view("offers")).rejects.toThrow(/fetch failed/);
+    expect(new Set(seen)).toEqual(new Set(["https://rpc.internal.example"]));
+    expect(seen).toHaveLength(4);
+  });
+});

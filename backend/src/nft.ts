@@ -58,30 +58,46 @@ export class NftPublisher {
     return this.account;
   }
 
-  /** Read-only contract view over JSON-RPC. */
+  /**
+   * Read-only contract view over JSON-RPC. Public RPC endpoints rate-limit bursts and drop a
+   * connection now and then, so a failed transport is retried, alternating with a second public
+   * endpoint of the same network. An answer from the chain (a value, or a contract error such as
+   * "method not found") is final.
+   */
   async view<T>(method: string, args: Record<string, unknown> = {}): Promise<T> {
     if (!this.opts.contract) throw new Error("STRATEGY_NFT_CONTRACT is not set");
     const f = this.opts.fetch ?? fetch;
-    const res = await f(this.opts.rpcUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "pilot",
-        method: "query",
-        params: {
-          request_type: "call_function",
-          finality: "final",
-          account_id: this.opts.contract,
-          method_name: method,
-          args_base64: Buffer.from(JSON.stringify(args)).toString("base64"),
-        },
-      }),
-      signal: AbortSignal.timeout(20_000),
+    const payload = JSON.stringify({
+      jsonrpc: "2.0",
+      id: "pilot",
+      method: "query",
+      params: {
+        request_type: "call_function",
+        finality: "final",
+        account_id: this.opts.contract,
+        method_name: method,
+        args_base64: Buffer.from(JSON.stringify(args)).toString("base64"),
+      },
     });
-    const body = (await res.json()) as { result?: { result?: number[] }; error?: unknown };
-    if (!body.result?.result) throw new Error(`view ${method} failed: ${JSON.stringify(body.error ?? body).slice(0, 300)}`);
-    return JSON.parse(Buffer.from(body.result.result).toString("utf8")) as T;
+    const second = this.opts.contract.endsWith(".testnet") ? "https://rpc.testnet.near.org" : "https://rpc.mainnet.near.org";
+    // The second endpoint is used only next to a known public one, never next to a private or test RPC.
+    const urls = /(^|\.)(fastnear\.com|near\.org)$/.test(new URL(this.opts.rpcUrl).hostname) && this.opts.rpcUrl !== second ? [this.opts.rpcUrl, second] : [this.opts.rpcUrl];
+    let last: unknown;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      let res: Response;
+      try {
+        res = await f(urls[attempt % urls.length]!, { method: "POST", headers: { "content-type": "application/json" }, body: payload, signal: AbortSignal.timeout(10_000) });
+        if (res.status === 429 || res.status >= 500) throw new Error(`rpc ${res.status}`);
+      } catch (e) {
+        last = e;
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        continue;
+      }
+      const body = (await res.json()) as { result?: { result?: number[] }; error?: unknown };
+      if (!body.result?.result) throw new Error(`view ${method} failed: ${JSON.stringify(body.error ?? body).slice(0, 300)}`);
+      return JSON.parse(Buffer.from(body.result.result).toString("utf8")) as T;
+    }
+    throw new Error(`view ${method} failed: ${(last as Error)?.message ?? "no answer"}`);
   }
 
   /** Which NFT holds this script, cached for 10 minutes (mints are rare). */
