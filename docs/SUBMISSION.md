@@ -10,6 +10,8 @@ Deadline: **14 November 2026, 23:59 UTC** (15 November, 02:59 Moscow time). A su
 - [ ] No keys in the repository or its history (`.env` is git-ignored; scan in [HANDOFF.md](../HANDOFF.md)).
 - [ ] The demo video is posted on X (text below) and the post is public.
 - [ ] A mainnet NEAR account for the prize: a named account like `team.near` or a 64-character implicit one.
+- [ ] Team overlap. One person may be in at most two projects, and then each project's README must name the other. This README names Knight's Isle (under "Hackathon notes"); the Knight's Isle README must name dolya. If nobody is in both teams, delete that line.
+- [ ] One email can send at most two submissions.
 
 ## The form (https://nearhackathon.com/#apply)
 

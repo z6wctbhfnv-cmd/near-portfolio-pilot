@@ -142,6 +142,7 @@ To go beyond paper mode, copy `.env.example` to `.env`; every key is optional an
 
 - All code in this repository was written during the hackathon; the first commit is dated 9 November 2026. There is no pre-hackathon code.
 - Built by a small team working with Claude Code.
+- Some of the same people also work on one other, independent entry: Knight's Isle (`z6wctbhfnv-cmd/knights-isle`), an idle island game in Telegram. The rules ask each README to name the other.
 
 ## License
 
