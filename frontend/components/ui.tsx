@@ -181,7 +181,7 @@ export function MoveDetail({ m }: { m: Move }) {
         <p className="mt-1 text-[17px] leading-snug">{m.why}</p>
       </div>
       <div className="mt-3 divide-y divide-line rounded-[18px] bg-card2">
-        {[["Rule", m.rule], ["Strategy", m.strategy], ["Run", "Verified in enclave"]].map(([k, v]) => (
+        {[["Rule", m.rule], ["Strategy", m.strategy], ...(m.run ? [["Run", m.run]] : [])].map(([k, v]) => (
           <div key={k} className="flex justify-between px-4 py-3.5 text-[16px]"><span className="text-dim">{k}</span><span>{v}</span></div>
         ))}
       </div>

@@ -129,7 +129,7 @@ Set `SCHEDULER_ENABLED=false` to turn it off. On Vercel, Cron calls `GET /v1/cro
 
 ## Tests
 
-`npm test` runs 91 tests against in-process fakes of the Agent API, OutLayer, NEAR AI, Binance, the NEAR RPC (NFT views) and Hyperliquid testnet. Nothing goes over the network. The Hyperliquid signing test uses vectors produced by Hyperliquid's official Python SDK (`test/hl-vectors.json`). `npm run smoke` makes read-only calls to the real services.
+`npm test` runs 92 tests against in-process fakes of the Agent API, OutLayer, NEAR AI, Binance, the NEAR RPC (NFT views) and Hyperliquid testnet. Nothing goes over the network. The Hyperliquid signing test uses vectors produced by Hyperliquid's official Python SDK (`test/hl-vectors.json`). `npm run smoke` makes read-only calls to the real services.
 
 The tests use the committed WASM in `wasm/`, so they run on a fresh clone without Rust. `npm run build:wasm` rebuilds it from `../strategies` (pinned toolchain; the build is reproducible).
 

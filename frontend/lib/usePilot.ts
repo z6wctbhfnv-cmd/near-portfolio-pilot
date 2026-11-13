@@ -53,14 +53,17 @@ function runToMove(r: Record<string, any>, pilot: Pilot): Move {
   const blocked = execs.filter((e) => e.status === "blocked" || e.status === "refused");
   const notes: string[] = (out.notes ?? []).map(humanNote);
   const strategy = STRAT[pilot.strategy.id] ?? pilot.strategy.id;
+  // What computed the decision. "Attested" only when the run really went through OutLayer's TEE.
+  const code = typeof r.wasm_sha256 === "string" ? ` · WASM ${r.wasm_sha256.slice(0, 10)}…` : "";
+  const run = r.engine === "outlayer" ? `OutLayer TEE, attested${code}` : `This server${code}`;
   const budget = pilot.mandate.budget.weekly_usd;
-  const rule = budget ? `Max $${budget} a week` : "Inside your signed limits";
+  const rule = budget ? `Max $${budget} a week` : pilot.mode === "live" ? "Inside your signed limits" : "Inside your limits";
   if (r.status === "error") {
-    return { id: r.id, when: when(r.started_at), kind: "review", title: "Run skipped", why: `${friendlyError(String(r.error ?? ""))} Nothing moved, your money is where it was.`, rule, strategy };
+    return { id: r.id, when: when(r.started_at), kind: "review", title: "Run skipped", why: `${friendlyError(String(r.error ?? ""))} Nothing moved, your money is where it was.`, rule, strategy, run };
   }
   if (!trades.length) {
     return { id: r.id, when: when(r.started_at), kind: "hold", title: "Held, no trade",
-      why: notes[0] ? `Checked the market: ${notes.join("; ")}. Everything sits inside your target, so nothing was traded.` : "Every holding is within its target band, so trading would only cost fees.", rule, strategy };
+      why: notes[0] ? `Checked the market: ${notes.join("; ")}. Everything sits inside your target, so nothing was traded.` : "Every holding is within its target band, so trading would only cost fees.", rule, strategy, run };
   }
   const t = trades[0];
   const wanted = trades.reduce((s, x) => s + x.usd, 0);
@@ -75,7 +78,7 @@ function runToMove(r: Record<string, any>, pilot: Pilot): Move {
     : capped
       ? `${cause}. The strategy wanted to move $${wanted.toFixed(0)}, but your rules cap a trade${limit ? ` at $${limit}` : ""}, so it moved $${done.toFixed(0)} now and will finish over the next runs.`
       : `${cause}, so ${strategy.toLowerCase()} moved $${done.toFixed(0)} back toward your target.`;
-  return { id: r.id, when: when(r.started_at), kind: blocked.length && !done ? "hold" : "swap", title, amount: `$${done.toFixed(0)}`, why, rule: capped && limit ? `Trades up to $${limit}` : rule, strategy };
+  return { id: r.id, when: when(r.started_at), kind: blocked.length && !done ? "hold" : "swap", title, amount: `$${done.toFixed(0)}`, why, rule: capped && limit ? `Trades up to $${limit}` : rule, strategy, run };
 }
 
 function seriesFrom(snaps: { ts?: number; total_usd?: number }[], fallback: number) {

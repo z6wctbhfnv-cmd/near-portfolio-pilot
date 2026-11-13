@@ -11,6 +11,8 @@ server.log.info({ config: describeConfig(cfg) }, "NEAR Portfolio Pilot backend")
 if (!app.wasm.available()) server.log.warn("strategy WASM not found: run `npm run build:wasm` (backtests and local runs need it)");
 if (cfg.LIVE_EXECUTION) server.log.warn("LIVE_EXECUTION is ON: live pilots send real swaps on NEAR Intents mainnet");
 
+// Fetch prices before the first visitor does, so the first page does not wait on the price source.
+void app.catalog.all().catch(() => undefined);
 const stop = cfg.SCHEDULER_ENABLED ? startScheduler(app, Math.min(cfg.TICK_MINUTES, 5) * 60_000) : () => undefined;
 await server.listen({ port: cfg.PORT, host: cfg.HOST });
 

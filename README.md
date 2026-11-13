@@ -19,7 +19,7 @@ You need **Node 22 or 24** (`nvm install 24 && nvm use 24`; both are tested) and
 git clone https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot && cd near-portfolio-pilot
 npm run setup     # installs backend/ and frontend/ dependencies
 npm run tour      # walks the whole product path in about a minute; exit code 0 = every step did what it says
-npm test          # 91 backend tests against in-process fakes, no network
+npm test          # 92 backend tests against in-process fakes, no network
 npm run dev       # backend on http://127.0.0.1:8787, site on http://localhost:3000
 ```
 

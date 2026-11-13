@@ -75,7 +75,7 @@ step("Start a paper portfolio and get a reason for every move", "POST /v1/pilots
   pilotId = c.pilot.id;
   const run = await call("POST", `/v1/pilots/${pilotId}/run`);
   check(run.status === "ok", `the run finished ok (${run.error ?? ""})`);
-  see(`engine       ${run.engine} WASM ${String(run.wasm_sha256).slice(0, 12)}… (the same binary OutLayer runs in a TEE)`);
+  see(`engine       ${run.engine} WASM ${String(run.wasm_sha256).slice(0, 12)}… (the binary built to run in OutLayer's TEE)`);
   see(`why          ${(run.output.notes ?? []).join("; ")}`);
   for (const t of run.output.trades as Json[]) see(`wanted       ${t.sell} → ${t.buy} ${usd(t.usd)}`);
   for (const e of run.executions as Json[]) see(`done         ${e.sell_symbol} → ${e.buy_symbol} ${usd(e.usd)} ${e.status}${e.error_code ? ` (${e.error_code})` : ""}`);

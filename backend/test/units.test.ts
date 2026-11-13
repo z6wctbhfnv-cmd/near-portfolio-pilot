@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { compilePolicy, parseMandateRules, strategyForMandate } from "../src/mandate.js";
 import { REVIEW_TUNABLE } from "../src/strategies.js";
 import { ruleReview, sanitizeProposals } from "../src/review.js";
-import { fromAtomic, toAtomic, usdToAtomic } from "../src/tokens.js";
+import { fromAtomic, toAtomic, TokenCatalog, usdToAtomic } from "../src/tokens.js";
 import { SecretBox } from "../src/secrets.js";
 import { DEFAULT_UNIVERSE } from "../src/tokens.js";
 
@@ -134,5 +134,46 @@ describe("drawdown stop from plain words", () => {
     expect(parseMandateRules("NEAR, просадка не больше 25%").mandate.drawdown_stop).toEqual({ enabled: true, max_drawdown: 0.25 });
     expect(parseMandateRules("NEAR and BTC, no stop").mandate.drawdown_stop.enabled).toBe(false);
     expect(parseMandateRules("NEAR и BTC, без стоп-лосса").mandate.drawdown_stop.enabled).toBe(false);
+  });
+});
+
+describe("token catalogue cache", () => {
+  it("serves a slightly old list at once and refreshes behind it; fetches when too old; survives an outage", async () => {
+    let now = 1_000_000;
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      let calls = 0;
+      let fail = false;
+      let release: (() => void) | null = null;
+      const token = (price: number) => [{ asset_id: "a", symbol: "A", decimals: 6, blockchain: "near", price }];
+      const cat = new TokenCatalog(async () => {
+        calls++;
+        const n = calls;
+        if (fail) throw new Error("down");
+        if (release === null && n === 2) await new Promise<void>((r) => (release = r));
+        return token(n);
+      });
+      expect((await cat.all())[0]!.price).toBe(1); // nothing cached: waits
+      now += 30_000;
+      expect((await cat.all())[0]!.price).toBe(1); // fresh: no fetch
+      expect(calls).toBe(1);
+      now += 60_000; // 90 s old: answered from memory, refresh started
+      expect((await cat.all())[0]!.price).toBe(1);
+      expect((await cat.all())[0]!.price).toBe(1); // the same refresh is shared
+      expect(calls).toBe(2);
+      release!();
+      await new Promise((r) => setTimeout(r, 0));
+      expect((await cat.all())[0]!.price).toBe(2); // the refresh landed
+      now += 10 * 60_000; // too old to serve blindly: waits for a fetch
+      expect((await cat.all())[0]!.price).toBe(3);
+      fail = true;
+      now += 10 * 60_000; // the source is down: the last list, under an hour old, is better than nothing
+      expect((await cat.all())[0]!.price).toBe(3);
+      now += 60 * 60_000;
+      await expect(cat.all()).rejects.toThrow("down");
+    } finally {
+      Date.now = realNow;
+    }
   });
 });

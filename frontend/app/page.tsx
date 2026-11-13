@@ -156,7 +156,7 @@ export default function Home() {
                   <p className="text-[16px] leading-snug"><span className="font-semibold text-yel">Why: </span>{m.why}</p>
                   <div className="mt-3 flex flex-wrap gap-2 text-[13px]">
                     <span className="rounded-full bg-white px-3 py-1">Rule: {m.rule}</span>
-                    <span className="rounded-full bg-white px-3 py-1 text-up">✓ Verified run</span>
+                    <span className="rounded-full bg-white px-3 py-1 text-up">✓ Inside your limits</span>
                   </div>
                 </>
               ),
@@ -197,7 +197,7 @@ export default function Home() {
           </Reveal>
           <Reveal delay={0.06} className="card relative overflow-hidden p-8 sm:p-10">
             <h3 className="display max-w-[14ch] text-[30px]">Your wallet, your money</h3>
-            <p className="mt-3 max-w-[32ch] text-[17px] text-dim">Funds never leave your own NEAR wallet. Each strategy run is verified.</p>
+            <p className="mt-3 max-w-[32ch] text-[17px] text-dim">Funds never leave your own NEAR wallet. Strategies are deterministic: the same code and prices always give the same move.</p>
             <div className="mt-8 grid grid-cols-3 gap-2 text-center">
               {[["$150", "weekly limit, e.g."], ["30%", "NEAR target, e.g."], ["24/7", "watching"]].map(([a, b]) => (
                 <motion.div key={b} whileHover={{ y: -4 }} className="rounded-[18px] bg-card2 px-2 py-4"><p className="num text-[22px] font-bold">{a}</p><p className="text-[13px] text-dim">{b}</p></motion.div>
