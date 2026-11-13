@@ -123,3 +123,18 @@ describe.skipIf(!wasmBuilt)("referrer and price tasks", () => {
     expect((await call("DELETE", `/v1/pilots/${id}/tasks/${left.id}`)).body.status).toBe("cancelled");
   });
 });
+
+describe.skipIf(!wasmBuilt)("price sources", () => {
+  it("keeps a paper portfolio working on spot prices when the Agent API token list is down", async () => {
+    const { call, agent } = setup();
+    agent.tokensDown = true;
+    const u = (await call("GET", "/v1/universe")).body;
+    expect(u.source).toMatch(/fallback/);
+    expect(u.data.find((a: { symbol: string }) => a.symbol === "BTC")).toMatchObject({ price: 70_000, decimals: 8 });
+    const id = await paperPilot(call);
+    const run = (await call("POST", `/v1/pilots/${id}/run`)).body;
+    expect(run.status).toBe("ok");
+    expect(run.executions.some((e: { status: string }) => e.status === "paper_filled")).toBe(true);
+    agent.tokensDown = false;
+  });
+});

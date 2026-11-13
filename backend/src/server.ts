@@ -133,7 +133,7 @@ export function buildServer(app: App) {
   server.get("/v1/network", async () => app.gateway.network());
   server.get("/v1/universe", async () => {
     const u = await app.catalog.universe();
-    return { data: u.map((a) => ({ symbol: a.symbol, asset_id: a.asset_id, stable: a.stable, decimals: a.token?.decimals ?? null, price: a.price, listed: Boolean(a.token) })) };
+    return { source: app.gateway.priceSource, data: u.map((a) => ({ symbol: a.symbol, asset_id: a.asset_id, stable: a.stable, decimals: a.token?.decimals ?? null, price: a.price, listed: Boolean(a.token) })) };
   });
   server.get("/v1/strategies", async () => ({ data: catalog() }));
 

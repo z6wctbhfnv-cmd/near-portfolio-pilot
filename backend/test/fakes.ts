@@ -41,6 +41,8 @@ export class FakeAgentApi {
   history: Array<Record<string, unknown>> = [];
   quoteWarnings: Array<{ code: string; detail: string }> = [];
   nextOpStatus = "PROCESSING";
+  /** Simulates the Agent API host being down for the public token list. */
+  tokensDown = false;
   seq = 0;
 
   token(symbol: string) {
@@ -90,7 +92,7 @@ export class FakeAgentApi {
     const headers = new Headers(init.headers);
     const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
 
-    if (path === "/v1/tokens") return this.ok({ data: DEFAULT_UNIVERSE.map((u) => this.token(u.symbol)) });
+    if (path === "/v1/tokens") return this.tokensDown ? this.err(503, "provider_unavailable") : this.ok({ data: DEFAULT_UNIVERSE.map((u) => this.token(u.symbol)) });
     if (path === "/v1/network") {
       return this.ok({
         network: "mainnet",
@@ -218,6 +220,11 @@ export class FakeAgentApi {
 
 /** Synthetic Binance klines: a smooth up-and-down path per symbol. */
 export function fakeKlines(url: URL): Response {
+  if (url.pathname.endsWith("/ticker/price")) {
+    const symbols = JSON.parse(url.searchParams.get("symbols") ?? "[]") as string[];
+    const spot: Record<string, number> = { NEARUSDT: 4, BTCUSDT: 70_000, ETHUSDT: 2_000, SOLUSDT: 100, ZECUSDT: 500 };
+    return new Response(JSON.stringify(symbols.map((s) => ({ symbol: s, price: String(spot[s] ?? 1) }))), { headers: { "content-type": "application/json" } });
+  }
   const symbol = url.searchParams.get("symbol")!;
   const start = Number(url.searchParams.get("startTime"));
   const base = { NEARUSDT: 4, BTCUSDT: 70_000, ETHUSDT: 2_000, SOLUSDT: 100, ZECUSDT: 500 }[symbol] ?? 1;

@@ -83,9 +83,15 @@ export class TokenCatalog {
 
   async all(force = false): Promise<TokenInfo[]> {
     if (!force && this.cache && Date.now() - this.cache.at < this.ttlMs) return this.cache.tokens;
-    const tokens = await this.fetchTokens();
-    this.cache = { at: Date.now(), tokens };
-    return tokens;
+    try {
+      const tokens = await this.fetchTokens();
+      this.cache = { at: Date.now(), tokens };
+      return tokens;
+    } catch (e) {
+      // Every source failed: a list up to an hour old beats no prices at all (entries carry their own expiry).
+      if (this.cache && Date.now() - this.cache.at < 3_600_000) return this.cache.tokens;
+      throw e;
+    }
   }
 
   async get(assetId: string): Promise<TokenInfo | undefined> {
