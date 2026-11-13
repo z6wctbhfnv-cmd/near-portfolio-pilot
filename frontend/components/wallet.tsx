@@ -1,11 +1,20 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import type { WalletSelector } from "@near-wallet-selector/core";
+import type { Wallet, WalletSelector } from "@near-wallet-selector/core";
 import type { WalletSelectorModal } from "@near-wallet-selector/modal-ui";
 import "@near-wallet-selector/modal-ui/styles.css";
 
-type Ctx = { accountId: string | null; ready: boolean; connect: () => void; disconnect: () => Promise<void> };
-const WalletCtx = createContext<Ctx>({ accountId: null, ready: false, connect: () => {}, disconnect: async () => {} });
+type Ctx = {
+  accountId: string | null;
+  /** The key the wallet reported at sign-in, if any. Often a limited key; see lib/owner.ts. */
+  publicKey: string | null;
+  ready: boolean;
+  connect: () => void;
+  disconnect: () => Promise<void>;
+  /** The connected wallet, for owner signatures (NEP-413 messages, NEP-366 delegate actions). */
+  wallet: () => Promise<Wallet>;
+};
+const WalletCtx = createContext<Ctx>({ accountId: null, publicKey: null, ready: false, connect: () => {}, disconnect: async () => {}, wallet: async () => { throw new Error("No wallet connected."); } });
 
 export const useWallet = () => useContext(WalletCtx);
 
@@ -14,6 +23,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [selector, setSelector] = useState<WalletSelector | null>(null);
   const [modal, setModal] = useState<WalletSelectorModal | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
+  const [publicKey, setPublicKey] = useState<string | null>(null);
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -32,7 +42,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       });
       setSelector(sel);
       setModal(setupModal(sel, { theme: "light" }));
-      const read = () => setAccountId(sel.store.getState().accounts.find((a) => a.active)?.accountId ?? null);
+      const read = () => {
+        // A testnet account here means the NFT wallet's session leaked into this one (some wallets keep one
+        // session per browser): treat it as not connected rather than as the mainnet owner.
+        const a = sel.store.getState().accounts.find((x) => x.active && !x.accountId.endsWith(".testnet"));
+        setAccountId(a?.accountId ?? null);
+        setPublicKey(a?.publicKey ?? null);
+      };
       read();
       const sub = sel.store.observable.subscribe(read);
       unsub = () => sub.unsubscribe();
@@ -47,5 +63,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     await w.signOut();
   }, [selector]);
 
-  return <WalletCtx.Provider value={{ accountId, ready: !!modal, connect, disconnect }}>{children}</WalletCtx.Provider>;
+  const wallet = useCallback(async () => {
+    if (!selector || !accountId) throw new Error("Connect your NEAR wallet first.");
+    return selector.wallet();
+  }, [selector, accountId]);
+
+  return <WalletCtx.Provider value={{ accountId, publicKey, ready: !!modal, connect, disconnect, wallet }}>{children}</WalletCtx.Provider>;
 }

@@ -1,4 +1,5 @@
 // Client for the Pilot backend (backend/README.md). Base URL from NEXT_PUBLIC_API_BASE.
+import type { Owner, OwnerAction } from "./owner";
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8787").replace(/\/$/, "");
 
 export class ApiError extends Error {
@@ -31,13 +32,15 @@ export type Mandate = {
   risk: string; assets: string[]; stable: string;
   budget: { daily_usd: number | null; weekly_usd: number | null; monthly_usd: number | null };
   max_trade_usd: number | null; max_actions_per_hour: number | null; owner_approval: boolean;
+  timelock_minutes?: number;
+  schedule?: { time_zone: string; days: string[]; start: string; end: string } | null;
   /** Sell everything to the stablecoin and pause when the portfolio falls this far below its peak. */
   drawdown_stop?: { enabled: boolean; max_drawdown: number };
 };
 export type StrategyRef = { id: string; params: Record<string, unknown> & { weights?: Record<string, number>; every_hours?: number } };
 export type ParseResult = { mandate: Mandate; notes: string[]; warnings: string[]; source: string; strategy: StrategyRef; policy: unknown };
 export type Pilot = {
-  id: string; name: string; status: string; mode: "paper" | "live"; owner: string | null;
+  id: string; name: string; status: string; mode: "paper" | "live"; owner: Owner | null;
   mandate: Mandate; strategy: StrategyRef; paper_holdings?: Record<string, number>;
   next_run_at: number; next_review_at: number; created_at: number;
 };
@@ -50,6 +53,8 @@ export type Review = { id: string; created_at: number; status?: string; summary?
 export type CatalogueStrategy = { id: string; name: string; description: string; params_schema: unknown; review_tunable: string[] };
 export type Backtest = { metrics?: Record<string, number>; benchmark?: Record<string, number>; equity?: { t: number; v: number }[] | number[]; [k: string]: unknown };
 export type UniverseAsset = { symbol: string; price: number; stable: boolean; listed: boolean };
+export type IntentStatus = { status: string; failure_code?: string | null; details?: Record<string, unknown>; [k: string]: unknown };
+export type PendingIntent = { correlation_id: string; type: string; status: string; created_at: number };
 
 const list = <T,>(p: Promise<{ data: T[] }>) => p.then((r) => r.data);
 
@@ -59,8 +64,9 @@ export const api = {
   strategies: () => list<CatalogueStrategy>(req("/v1/strategies")),
   backtest: (id: string, params: Record<string, unknown>, days = 90) => req<Backtest>(`/v1/strategies/${id}/backtest`, { json: { params, days } }),
   parse: (text: string) => req<ParseResult>("/v1/mandate/parse", { json: { text } }),
-  createPilot: (body: { name: string; text?: string; mandate?: Mandate; initial_usd: number; mode?: "paper" | "live"; owner?: string; accepted_terms?: boolean }) =>
-    req<{ pilot: Pilot; notes?: string[]; owner_action?: unknown }>("/v1/pilots", { json: body }),
+  compile: (mandate: Mandate) => req<Omit<ParseResult, "notes" | "source">>("/v1/mandate/compile", { json: { mandate } }),
+  createPilot: (body: { name: string; text?: string; mandate?: Mandate; initial_usd: number; mode?: "paper" | "live"; owner?: Owner; accepted_terms?: boolean }) =>
+    req<{ pilot: Pilot; notes?: string[]; warnings?: string[]; owner_action?: OwnerAction }>("/v1/pilots", { json: body }),
   pilots: () => list<Pilot>(req("/v1/pilots")),
   pilot: (id: string) => req<Pilot & { pilot?: Pilot }>(`/v1/pilots/${id}`).then((r) => (r.pilot ?? r) as Pilot),
   patchPilot: (id: string, body: { name?: string; paused?: boolean; review_auto_apply?: boolean; drawdown_stop?: { enabled?: boolean; max_drawdown?: number } }) => req<unknown>(`/v1/pilots/${id}`, { method: "PATCH", json: body }),
@@ -75,6 +81,17 @@ export const api = {
   reviews: (id: string) => list<Review>(req(`/v1/pilots/${id}/reviews`)),
   applyReview: (rid: string) => req<unknown>(`/v1/reviews/${rid}/apply`, { json: {} }),
   dismissReview: (rid: string) => req<unknown>(`/v1/reviews/${rid}/dismiss`, { json: {} }),
+
+  /* owner actions on a live pilot: the backend prepares, the owner signs, the backend submits */
+  grant: (id: string) => req<{ grant_id: string; expires_at: number; owner_action: OwnerAction }>(`/v1/pilots/${id}/grants`, { json: {} }),
+  policy: (id: string, mandate?: Mandate) => req<{ owner_action: OwnerAction; warnings?: string[] }>(`/v1/pilots/${id}/policy`, { json: mandate ? { mandate } : {} }),
+  ownerAction: (id: string, action: "freeze" | "unfreeze") => req<{ owner_action: OwnerAction }>(`/v1/pilots/${id}/${action}`, { json: {} }),
+  pilotIntents: (id: string) => list<PendingIntent>(req(`/v1/pilots/${id}/intents`)),
+  submitIntent: (cid: string, signed_data: Record<string, unknown>) => req<IntentStatus>(`/v1/intents/${encodeURIComponent(cid)}/submit`, { json: { signed_data } }),
+  intentStatus: (cid: string, waitMs = 0) => req<{ status: IntentStatus; generated?: OwnerAction }>(`/v1/intents/${encodeURIComponent(cid)}?wait_ms=${waitMs}`),
+
+  /** NEAR AI drafts a script from an idea (needs NEARAI_API_KEY on the backend). */
+  draftScript: (idea: string) => req<{ code: string; model: string }>("/v1/scripts/draft", { json: { idea } }),
 };
 
 /* ---------- the pilot this browser is looking at ---------- */

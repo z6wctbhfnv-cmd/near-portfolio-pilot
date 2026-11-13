@@ -7,6 +7,7 @@ const tabs = [
   { href: "/", label: "Home", img: "segment" },
   { href: "/dashboard", label: "Portfolio", img: "pie" },
   { href: "/strategies", label: "Strategies", img: "arrow" },
+  { href: "/leaderboard", label: "Top", img: "blocks" },
   { href: "/start", label: "Rules", img: "shield" },
 ];
 
@@ -16,7 +17,7 @@ export function TabBar() {
   if (path.startsWith("/studio")) return null;
   return (
     <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-bg/90 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1.5 backdrop-blur-xl md:hidden">
-      <div className="mx-auto grid max-w-[480px] grid-cols-4">
+      <div className="mx-auto grid max-w-[480px] grid-cols-5">
         {tabs.map((t) => {
           const active = t.href === "/" ? path === "/" : path.startsWith(t.href);
           return (
