@@ -8,6 +8,7 @@ import { Area } from "@/components/Area";
 import { ScriptSheetBody, scriptImg, versionLabel } from "@/components/ScriptSheet";
 import { InviteCard } from "@/components/Referral";
 import { periodStats, scriptTitle, simulatedRecord, yoctoToNear } from "@/lib/chain";
+import { isCopyable } from "@/lib/useLeaderboard";
 import { NFT, explorerAccount } from "@/lib/config";
 import { useLeaderboard, type LeaderRow } from "@/lib/useLeaderboard";
 
@@ -115,6 +116,7 @@ export default function Leaderboard() {
                   <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[12px]">
                     <span className="truncate text-dim">{r.id}</span>
                     {r.chain && <span className="rounded-full bg-[#e8f7ee] px-2 py-0.5 font-semibold text-up">on-chain ✓</span>}
+                    {isCopyable(r.id) && <span className="rounded-full bg-yel px-2 py-0.5 font-semibold text-white">copy</span>}
                     {r.chain && r.chain.version > 1 && <span className="rounded-full bg-cream px-2 py-0.5 font-semibold text-yel-deep">{versionLabel(r.chain.version, r.chain.changedAt)}</span>}
                     {r.bt?.uses_perps && <span className="rounded-full bg-card2 px-2 py-0.5 font-semibold">perps</span>}
                   </span>

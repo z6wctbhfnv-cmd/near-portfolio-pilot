@@ -17,6 +17,8 @@ export type BacktestRequest = {
   /** Start from these units instead of `initial_usd` in the stablecoin (metrics still use initial_usd as the start value). */
   initial_units?: Record<string, number>;
   initial_state?: unknown;
+  /** Also return every day's return (for period tables), not only the sampled curve. */
+  daily?: boolean;
 };
 
 export type StrategyOutput = {
@@ -171,5 +173,8 @@ export async function backtest(wasm: StrategyWasm, history: PriceHistory, req: B
     activity: { trades, turnover_usd: Number(turnover.toFixed(2)), fees_usd: Number(fees.toFixed(2)), strategy_errors: errors, last_error: lastError },
     final_units: Object.fromEntries(Object.entries(units).map(([k, v]) => [k, Number(v.toFixed(8))])),
     equity_curve: curve.filter((_, i) => i % step === 0 || i === curve.length - 1),
+    ...(req.daily
+      ? { daily_start: days[0]!, daily_returns: equity.map((e, i) => Number(((i === 0 ? e / req.initial_usd : e / equity[i - 1]!) - 1).toFixed(6))) }
+      : {}),
   };
 }

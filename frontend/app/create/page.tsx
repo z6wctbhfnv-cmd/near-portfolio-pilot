@@ -63,7 +63,7 @@ export default function Create() {
     <main className="mx-auto max-w-[760px] px-4 pb-24 sm:px-6">
       <div className="flex items-start justify-between gap-4 pt-10">
         <div className="min-w-0">
-          <h1 className="display text-[clamp(2.1rem,7vw,3.4rem)]"><Line>Write a script</Line></h1>
+          <h1 className="display text-[clamp(1.4rem,7vw,3.4rem)]"><Line>Write a script</Line></h1>
           <p className="mt-3 max-w-[46ch] text-[18px] text-dim">Describe a trading idea in plain words. NEAR AI drafts the code, dolya checks it, and you mint it as an NFT that others can copy.</p>
         </div>
         <img src="/3d/sparkle.png" alt="" className="h-20 w-20 shrink-0 sm:h-28 sm:w-28" />

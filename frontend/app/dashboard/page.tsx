@@ -27,11 +27,20 @@ export default function Dashboard() {
 
   return (
     <main className="mx-auto max-w-[1200px] px-4 pb-16 pt-6 sm:px-6">
+      {loading && (
+        <div className="grid min-h-[50vh] place-items-center" role="status" aria-live="polite">
+          <div className="flex flex-col items-center gap-3 text-dim">
+            <motion.img src="/3d/segment.png" alt="" className="h-20 w-20" animate={{ rotate: [0, 12, -8, 0] }} transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }} />
+            <p className="text-[16px]">Loading your portfolio…</p>
+          </div>
+        </div>
+      )}
+
       {!live && !loading && (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="card relative mx-auto max-w-[720px] overflow-hidden p-8 sm:p-10">
-          <img src="/3d/segment.png" alt="" className="absolute -right-6 -top-6 h-40 w-40 opacity-90" />
+          <img src="/3d/segment.png" alt="" className="absolute -right-4 -top-4 h-24 w-24 opacity-90 sm:-right-6 sm:-top-6 sm:h-40 sm:w-40" />
           <p className="text-[15px] font-semibold text-yel">Portfolio</p>
-          <h1 className="display mt-2 max-w-[16ch] text-[clamp(1.8rem,6vw,2.6rem)]">No portfolio yet</h1>
+          <h1 className="display mt-2 max-w-[16ch] pr-16 text-[clamp(1.8rem,6vw,2.6rem)] sm:pr-0">No portfolio yet</h1>
           <p className="mt-3 max-w-[40ch] text-[17px] leading-snug text-dim">Start with paper money to see how dolya works: real prices, real strategy runs, a reason for every move, and nothing at risk.</p>
           {error && <p className="mt-3 rounded-[14px] bg-[#fdecea] px-3 py-2 text-[14px] text-down" role="alert">{error}</p>}
           <div className="mt-6 flex flex-wrap gap-3">

@@ -21,7 +21,16 @@ const faq = [
   { img: "shield", q: "What stops a strategy from going wild?", a: "Your signed rules. The wallet itself enforces the limits, so a strategy simply can’t spend more or trade bigger than you allowed." },
   { img: "lock", q: "How do I stop everything?", a: "Tap Freeze. All strategies pause at once and nothing trades until you resume." },
   { img: "sparkle", q: "What does the AI actually do?", a: "Once a week it reviews your strategies against your rules and explains what it saw. It can’t move money on its own." },
-  { img: "question", q: "Does it cost anything?", a: "This is a hackathon demo. Real trades pay the normal network and swap fees, nothing extra." },
+  { img: "blocks", q: "What is a strategy NFT?", a: "A strategy (a script) minted as an NFT on NEAR. It carries a public weekly record of how the script did. The code stays private: the NFT holds only its hash. Whoever holds the NFT earns its copy fees." },
+  { img: "arrow", q: "What does copying cost?", a: "5% of your new profit goes to the strategy’s holder and 0.25% to dolya, weekly, and only while your portfolio is above its previous peak. No new profit, no fee." },
+  { img: "question", q: "Does it cost anything else?", a: "Running your own rules is free: real trades pay only the normal network and swap fees. This is a hackathon build; start with paper money." },
+];
+
+const social = [
+  { img: "blocks", t: "Every strategy is an NFT", d: "Its weekly record is public on NEAR. The code stays private: the NFT holds only its hash." },
+  { img: "balance", t: "Copy in one tap", d: "Your agent follows the script inside your own signed limits. It can never trade bigger than you allowed." },
+  { img: "arrow", t: "Creators earn 5%", d: "Of copiers’ new profit, and only above their previous peak. No profit, no fee." },
+  { img: "wallet", t: "Sell it, income included", d: "Buy a script or offer your own price. The record and the copy fees move with the NFT." },
 ];
 
 const fade = (d: number) => ({ initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, transition: { delay: d, duration: 0.7, ease } });
@@ -68,7 +77,7 @@ export default function Home() {
         <div className="relative mx-auto flex min-h-[560px] max-w-[1400px] flex-col overflow-hidden rounded-[40px] bg-[radial-gradient(120%_90%_at_80%_20%,#ffa53a_0%,#ff7a00_45%,#f45d00_100%)] text-white lg:min-h-[calc(100svh-88px)]">
           <div className="relative mx-auto grid w-full max-w-[1200px] flex-1 grid-cols-1 items-center gap-2 px-5 py-10 sm:gap-6 sm:px-10 sm:py-12 lg:grid-cols-[1fr_1fr]">
             <div className="relative z-10 min-w-0">
-              <h1 className="display text-[clamp(1.75rem,8.2vw,2.6rem)] sm:text-[clamp(2.4rem,4.8vw,4.4rem)]">
+              <h1 className="display text-[clamp(1.75rem,8.2vw,2.6rem)] sm:text-[clamp(2.4rem,4.8vw,3.7rem)]">
                 <Line delay={0.05}>Your moves.</Line>
                 <Line delay={0.15}>Now explained.</Line>
               </h1>
@@ -77,7 +86,7 @@ export default function Home() {
               </motion.p>
               <motion.div {...fade(0.5)} className="mt-7 flex flex-wrap gap-3 sm:mt-9">
                 <Link href="/start" className="btn btn-white min-w-[200px] max-sm:flex-1">Set my rules <span className="arrow">→</span></Link>
-                <Link href="/dashboard" className="btn btn-ghost min-w-[200px] max-sm:flex-1">Try the demo</Link>
+                <Link href="/dashboard" className="btn btn-ghost min-w-[200px] max-sm:flex-1">Try with paper money</Link>
               </motion.div>
             </div>
 
@@ -126,7 +135,7 @@ export default function Home() {
         {/* Moves feed */}
         <section className="grid items-start gap-10 pt-28 lg:grid-cols-[1fr_1.15fr]">
           <div className="lg:sticky lg:top-28">
-            <p className="text-[15px] font-semibold text-yel">Moves, explained</p>
+            <p className="text-[15px] font-semibold text-yel">Moves, explained <span className="ml-1 rounded-full bg-card2 px-2 py-0.5 text-[12px] font-semibold text-dim">example</span></p>
             <h2 className="display mt-3 text-[clamp(2rem,4.4vw,3.4rem)]"><Line>No mystery</Line><Line delay={0.08}>trades.</Line></h2>
             <p className="mt-5 max-w-[36ch] text-[19px] leading-snug text-dim">Open any move to see the reason, the rule it followed and the strategy that made it.</p>
             <Float3D src="/3d/pie.png" size={320} depth={1} delay={0.1} rotate={-4} className="mt-4 hidden lg:block" />
@@ -155,6 +164,30 @@ export default function Home() {
           </Reveal>
         </section>
 
+        {/* Social trading: strategy NFTs */}
+        <section id="copy" className="scroll-mt-24 pt-28">
+          <p className="text-[15px] font-semibold text-yel">Strategy NFTs</p>
+          <h2 className="display mt-3 text-[clamp(2rem,4.4vw,3.4rem)]"><Line>Copy the best.</Line><Line delay={0.08} className="max-sm:hidden"><span className="text-dim">Or be the one they copy.</span></Line><Line delay={0.08} className="sm:hidden"><span className="text-dim">Or be the one</span></Line><Line delay={0.16} className="sm:hidden"><span className="text-dim">they copy.</span></Line></h2>
+          <p className="mt-5 max-w-[46ch] text-[19px] leading-snug text-dim">Strategies on dolya are scripts with a public track record. Follow one, write your own with AI, or buy one together with the income it earns.</p>
+          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {social.map((c, i) => (
+              <Reveal key={c.t} delay={i * 0.06}>
+                <motion.div whileHover="hover" initial="rest" animate="rest" className="card h-full overflow-hidden p-6">
+                  <motion.img src={`/3d/${c.img}.png`} alt="" className="-ml-2 h-24 w-24"
+                    variants={{ rest: { rotate: 0, scale: 1, y: 0 }, hover: { rotate: -8, scale: 1.1, y: -4 } }}
+                    transition={{ type: "spring", stiffness: 260, damping: 12 }} />
+                  <h3 className="display mt-4 text-[22px]">{c.t}</h3>
+                  <p className="mt-2 text-[16px] leading-snug text-dim">{c.d}</p>
+                </motion.div>
+              </Reveal>
+            ))}
+          </div>
+          <div className="mt-8 flex flex-wrap gap-3">
+            <Link href="/leaderboard" className="btn btn-yel">See the leaderboard <span className="arrow">→</span></Link>
+            <Link href="/create" className="btn btn-gray">Write your own</Link>
+          </div>
+        </section>
+
         {/* Safety */}
         <section className="grid gap-4 pt-28 md:grid-cols-2">
           <Reveal className="card relative flex min-h-[300px] flex-col overflow-hidden p-8 sm:p-10">
@@ -166,7 +199,7 @@ export default function Home() {
             <h3 className="display max-w-[14ch] text-[30px]">Your wallet, your money</h3>
             <p className="mt-3 max-w-[32ch] text-[17px] text-dim">Funds never leave your own NEAR wallet. Each strategy run is verified.</p>
             <div className="mt-8 grid grid-cols-3 gap-2 text-center">
-              {[["$150", "weekly limit"], ["30%", "NEAR target"], ["24/7", "watching"]].map(([a, b]) => (
+              {[["$150", "weekly limit, e.g."], ["30%", "NEAR target, e.g."], ["24/7", "watching"]].map(([a, b]) => (
                 <motion.div key={b} whileHover={{ y: -4 }} className="rounded-[18px] bg-card2 px-2 py-4"><p className="num text-[22px] font-bold">{a}</p><p className="text-[13px] text-dim">{b}</p></motion.div>
               ))}
             </div>
@@ -202,17 +235,19 @@ export default function Home() {
         <footer className="mt-16 grid gap-8 border-t border-line py-12 sm:grid-cols-[1.2fr_1fr_1fr]">
           <div>
             <Logo />
-            <p className="mt-3 max-w-[30ch] text-[15px] text-dim">Your moves, now explained. Built for the NEAR Hackathon 2026.</p>
+            <p className="mt-3 max-w-[30ch] text-[15px] text-dim">Your moves, now explained. Copy, create, earn. Built at the NEAR Hackathon 2026.</p>
           </div>
           <div className="flex flex-col gap-2 text-[16px]">
             <p className="text-[13px] font-semibold uppercase tracking-wide text-dim">Learn</p>
             <a href="#how" className="w-fit hover:text-yel">How it works</a>
+            <a href="#copy" className="w-fit hover:text-yel">Strategy NFTs</a>
             <a href="#faq" className="w-fit hover:text-yel">FAQ</a>
           </div>
           <div className="flex flex-col gap-2 text-[16px]">
             <p className="text-[13px] font-semibold uppercase tracking-wide text-dim">App</p>
             <Link href="/dashboard" className="w-fit hover:text-yel">Portfolio</Link>
             <Link href="/strategies" className="w-fit hover:text-yel">Strategies</Link>
+            <Link href="/leaderboard" className="w-fit hover:text-yel">Leaderboard</Link>
             <Link href="/start" className="w-fit hover:text-yel">Set rules</Link>
           </div>
           <p className="text-[13px] text-dim sm:col-span-3">Demo. Not financial advice.</p>

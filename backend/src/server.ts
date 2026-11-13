@@ -175,6 +175,7 @@ export function buildServer(app: App) {
         to: z.string().optional(),
         initial_usd: z.number().positive().default(1000),
         cost_bps: z.number().min(0).max(500).default(app.cfg.PAPER_COST_BPS),
+        daily: z.boolean().default(false),
       }),
       req.body,
     );
@@ -182,7 +183,7 @@ export function buildServer(app: App) {
     if (!Number.isFinite(to)) throw new HttpError(400, "validation_failed", "`to` is not a date");
     if (!app.wasm.available()) throw new HttpError(503, "wasm_missing", "strategy WASM is not built: run `npm run build:wasm`");
     try {
-      return await backtest(app.wasm, app.history, { strategy: id, params: b.params, from: to - b.days * DAY, to, initial_usd: b.initial_usd, cost_bps: b.cost_bps });
+      return await backtest(app.wasm, app.history, { strategy: id, params: b.params, from: to - b.days * DAY, to, initial_usd: b.initial_usd, cost_bps: b.cost_bps, daily: b.daily });
     } catch (e) {
       throw new HttpError(400, "backtest_failed", (e as Error).message);
     }

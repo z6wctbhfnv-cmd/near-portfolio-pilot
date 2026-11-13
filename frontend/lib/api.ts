@@ -77,6 +77,9 @@ export const api = {
   universe: () => list<UniverseAsset>(req("/v1/universe")),
   strategies: () => list<CatalogueStrategy>(req("/v1/strategies")),
   backtest: (id: string, params: Record<string, unknown>, days = 90) => req<Backtest>(`/v1/strategies/${id}/backtest`, { json: { params, days } }),
+  /** A backtest with one return per day, for the leaderboard's period tables. */
+  backtestDaily: (id: string, params: Record<string, unknown>, days = 730) =>
+    req<{ metrics: { total_return: number; max_drawdown: number }; daily_start: number; daily_returns: number[]; params: Record<string, unknown> }>(`/v1/strategies/${id}/backtest`, { json: { params, days, daily: true } }),
   parse: (text: string) => req<ParseResult>("/v1/mandate/parse", { json: { text } }),
   compile: (mandate: Mandate) => req<Omit<ParseResult, "notes" | "source">>("/v1/mandate/compile", { json: { mandate } }),
   createPilot: (body: { name: string; text?: string; mandate?: Mandate; initial_usd: number; mode?: "paper" | "live"; owner?: Owner; accepted_terms?: boolean }) =>

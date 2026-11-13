@@ -3,16 +3,30 @@ import { NFT } from "./config";
 
 const b64 = (o: unknown) => btoa(unescape(encodeURIComponent(JSON.stringify(o))));
 
+/** Public RPCs rate-limit bursts (and their 429s carry no CORS headers): retry, then try the other endpoint. */
+const RPC_FALLBACK: Record<string, string> = { testnet: "https://rpc.testnet.near.org", mainnet: "https://rpc.mainnet.near.org" };
+
 export async function view<T>(method: string, args: Record<string, unknown> = {}, contract = NFT.contract, rpc = NFT.rpc): Promise<T> {
-  const r = await fetch(rpc, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: "dolya", method: "query",
-      params: { request_type: "call_function", finality: "final", account_id: contract, method_name: method, args_base64: b64(args) } }),
-  });
-  const j = await r.json();
-  if (j.error || j.result?.error) throw new Error(String(j.error?.data ?? j.error?.message ?? j.result?.error ?? "rpc error"));
-  return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result))) as T;
+  const body = JSON.stringify({ jsonrpc: "2.0", id: "dolya", method: "query",
+    params: { request_type: "call_function", finality: "final", account_id: contract, method_name: method, args_base64: b64(args) } });
+  const fallback = RPC_FALLBACK[contract.endsWith(".testnet") ? "testnet" : "mainnet"];
+  let last: unknown;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const url = attempt % 2 === 1 && fallback && fallback !== rpc ? fallback : rpc;
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (r.status === 429 || r.status >= 500) throw new Error(`rpc ${r.status}`);
+      const j = await r.json();
+      // A contract-level answer (including "method not found") is final: no retry.
+      if (j.error || j.result?.error) throw Object.assign(new Error(String(j.error?.data ?? j.error?.message ?? j.result?.error ?? "rpc error")), { final: true });
+      return JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result))) as T;
+    } catch (e) {
+      if ((e as { final?: boolean }).final) throw e;
+      last = e;
+      await new Promise((res) => setTimeout(res, 300 * (attempt + 1)));
+    }
+  }
+  throw last instanceof Error ? last : new Error("rpc unavailable");
 }
 
 export type Checkpoint = { period_end_ms: number; equity_index: string; proofs_hash: string; executions: number; code_hash: string; followers: number };
