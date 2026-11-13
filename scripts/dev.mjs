@@ -8,11 +8,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const major = Number(process.versions.node.split(".")[0]);
-if (major < 24) {
-  console.error(`dolya needs Node 24 (found ${process.versions.node}). Run: nvm install 24 && nvm use 24`);
-  process.exit(1);
-}
 for (const dir of ["backend", "frontend"]) {
   if (!existsSync(resolve(root, dir, "node_modules"))) {
     console.error(`Dependencies are missing in ${dir}/. Run: npm run setup`);

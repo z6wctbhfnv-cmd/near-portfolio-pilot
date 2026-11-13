@@ -2,11 +2,17 @@
   "name": "dolya",
   "private": true,
   "description": "dolya: social trading with strategy NFTs on NEAR. Start with README.md.",
-  "engines": { "node": "24.x" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
+    "presetup": "node scripts/check-node.mjs",
     "setup": "npm --prefix backend ci && npm --prefix frontend ci",
+    "pretour": "node scripts/check-node.mjs",
     "tour": "npm --prefix backend run tour",
+    "pretest": "node scripts/check-node.mjs",
     "test": "npm --prefix backend test",
+    "predev": "node scripts/check-node.mjs",
     "dev": "node scripts/dev.mjs",
     "backend": "npm --prefix backend start",
     "site": "npm --prefix frontend run dev"

@@ -13,7 +13,7 @@ The project was first named NEAR Portfolio Pilot; code and the contract still us
 
 ## Try it in five minutes
 
-You need **Node 24** (`nvm install 24 && nvm use 24`) and nothing else: no keys, no wallet, no Rust (the strategy WASM is committed). Everything below trades **paper money** on live public prices and reads strategy NFTs from NEAR testnet.
+You need **Node 22 or 24** (`nvm install 24 && nvm use 24`; both are tested) and nothing else: no keys, no wallet, no Rust (the strategy WASM is committed). Everything below trades **paper money** on live public prices and reads strategy NFTs from NEAR testnet.
 
 ```bash
 git clone https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot && cd near-portfolio-pilot
