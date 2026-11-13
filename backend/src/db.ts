@@ -219,6 +219,23 @@ CREATE TABLE IF NOT EXISTS perp_orders (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  pilot_id TEXT NOT NULL,
+  asset TEXT NOT NULL,
+  op TEXT NOT NULL,                   -- "<" | ">"
+  price REAL NOT NULL,
+  side TEXT NOT NULL,                 -- buy | sell
+  usd REAL NOT NULL,
+  status TEXT NOT NULL,               -- active | done | failed | cancelled
+  text TEXT,
+  fired_at INTEGER,
+  fired_price REAL,
+  result_json TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tasks_pilot ON tasks(pilot_id, status);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   pilot_id TEXT,
@@ -245,6 +262,10 @@ export class Db {
         // A swarm pilot follows several scripts at once (see swarm.ts); null = one strategy.
         "ALTER TABLE pilots ADD COLUMN swarm_json TEXT",
         "ALTER TABLE pilots ADD COLUMN swarm_state_json TEXT",
+        // Copying a script NFT (social.ts): {token_id, strategy_id, since}; null = the pilot's own strategy.
+        "ALTER TABLE pilots ADD COLUMN following_json TEXT",
+        // Who referred this owner (NEAR account), recorded on chain by the agent once live.
+        "ALTER TABLE pilots ADD COLUMN referrer TEXT",
       ]) {
         try {
           await client.execute(sql);

@@ -1,4 +1,5 @@
 /** Wires every service together. Tests build the same graph with fakes injected. */
+import { watchTasks } from "./social.js";
 import { dirname, resolve } from "node:path";
 import { AgentGateway } from "./agent.js";
 import type { Config } from "./config.js";
@@ -134,6 +135,8 @@ export async function tick(app: App) {
   for (const p of await app.pilots.dueReviews()) {
     await app.reviewer.review(p.id).catch(err(p.id, "review"));
   }
+  // Price-triggered tasks ("if BTC < 60k, buy $500"): fire the ones whose condition holds now.
+  await watchTasks(app).catch(err(null, "price tasks"));
   // Weekly copy fees: settle finished weeks, follow payments in flight, credit them on chain.
   for (const p of await app.fees.due()) {
     await app.fees.settle(p.id).catch(err(p.id, "fees"));

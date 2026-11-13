@@ -25,6 +25,8 @@ export type PilotRow = {
   risk_since: number | null;
   swarm_json: string | null;
   swarm_state_json: string | null;
+  following_json: string | null;
+  referrer: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -49,6 +51,8 @@ export function view(r: PilotRow) {
     risk_since: r.risk_since,
     swarm: parse<SwarmConfig | null>(r.swarm_json, null),
     swarm_state: parse<SwarmState | null>(r.swarm_state_json, null),
+    following: parse<{ token_id: string; strategy_id: string; since: number } | null>(r.following_json ?? null, null),
+    referrer: r.referrer ?? null,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };

@@ -11,7 +11,8 @@ import { describeConfig } from "./config.js";
 import { json, parse } from "./db.js";
 import { compilePolicy, type Mandate, MandateSchema, parseMandate, strategyForMandate } from "./mandate.js";
 import { copyGate } from "./copying.js";
-import { DEFAULT_HOLDER_FEE_BPS, PLATFORM_FEE_BPS, REFERRAL_FEE_BPS } from "./fees.js";
+import { computeFee, DEFAULT_HOLDER_FEE_BPS, PLATFORM_FEE_BPS, REFERRAL_FEE_BPS } from "./fees.js";
+import { addTask, cancelTask, follow, listTasks, setReferrer, SocialError, tokenGate, unfollow } from "./social.js";
 import { scriptCodeHash } from "./nft.js";
 import { CASH, SwarmConfigSchema, valueOf } from "./swarm.js";
 import { catalog, isStrategyId, parseStrategyParams, STRATEGY_IDS, type StrategyId } from "./strategies.js";
@@ -100,7 +101,7 @@ export function buildServer(app: App) {
   });
 
   server.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, _req, reply) => {
-    if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
+    if (err instanceof HttpError || err instanceof SocialError) return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
     if (err instanceof NotFound) return reply.code(404).send({ error: { code: "not_found", message: err.message } });
     if (err instanceof ConfigError) return reply.code(503).send({ error: { code: "not_configured", message: err.message } });
     if (err instanceof AgentApiError) {
@@ -526,6 +527,8 @@ export function buildServer(app: App) {
         min_fee_usd: app.cfg.MIN_FEE_USD,
       },
       peaks: await app.fees.peaks(p.id),
+      following: p.following,
+      estimate: await feeEstimate(p),
       data: rows.map((r) => ({ ...r, request: parse(r.request_json, null), quote: parse(r.quote_json, null), response: parse(r.response_json, null), request_json: undefined, quote_json: undefined, response_json: undefined })),
     };
   });
@@ -602,6 +605,64 @@ export function buildServer(app: App) {
   server.delete("/v1/pilots/:id/swarm", async (req) => {
     const p = await pilotOr404((req.params as { id: string }).id);
     return { pilot: await app.pilots.update(p.id, { swarm_json: null, swarm_state_json: null }) };
+  });
+
+  // ------------------------------------------------------------ copying, referrer, price tasks
+
+  /** This week so far: profit above the peak and the fee it would carry (an estimate, not a charge). */
+  async function feeEstimate(p: NonNullable<Awaited<ReturnType<typeof app.pilots.get>>>) {
+    const since = p.following?.since ?? p.created_at;
+    const first = await app.db.prepare("SELECT total_usd FROM snapshots WHERE pilot_id = ? AND ts >= ? ORDER BY ts LIMIT 1").get<{ total_usd: number }>(p.id, since);
+    const last = await app.db.prepare("SELECT total_usd FROM snapshots WHERE pilot_id = ? ORDER BY ts DESC LIMIT 1").get<{ total_usd: number }>(p.id);
+    if (!first || !last) return null;
+    const peaks = await app.fees.peaks(p.id);
+    const hwm = Math.max(first.total_usd, ...peaks.map((x) => Number((x as { hwm_usd?: number }).hwm_usd ?? 0)));
+    let holderBps = DEFAULT_HOLDER_FEE_BPS;
+    if (p.following && app.nft.contract) holderBps = await app.nft.copyFeeBps(p.following.token_id).catch(() => DEFAULT_HOLDER_FEE_BPS);
+    const c = computeFee({ equity: last.total_usd, hwm, deposits: 0, holderBps, payerIsHolder: !p.following });
+    return { equity_usd: last.total_usd, peak_usd: hwm, ...c };
+  }
+
+  server.post("/v1/pilots/:id/follow", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const b = body(z.object({ token_id: z.string().min(1).max(128) }), req.body);
+    return follow(app, p, b.token_id);
+  });
+
+  server.post("/v1/pilots/:id/unfollow", async (req) => unfollow(app, await pilotOr404((req.params as { id: string }).id)));
+
+  // Bond gate for any script NFT, for the leaderboard (no pilot needed).
+  server.get("/v1/scripts/:token/gate", async (req) => tokenGate(app, null, (req.params as { token: string }).token));
+
+  server.post("/v1/pilots/:id/referrer", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const b = body(z.object({ referrer: z.string().min(2).max(64) }), req.body);
+    return setReferrer(app, p, b.referrer);
+  });
+
+  server.get("/v1/pilots/:id/tasks", async (req) => ({ data: await listTasks(app, (await pilotOr404((req.params as { id: string }).id)).id) }));
+
+  server.post("/v1/pilots/:id/tasks", async (req, reply) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const b = body(
+      z.object({
+        asset: z.string().min(2).max(10),
+        op: z.enum(["<", ">"]),
+        price: z.number().positive(),
+        side: z.enum(["buy", "sell"]),
+        usd: z.number().positive().max(1_000_000),
+        text: z.string().max(300).optional(),
+      }),
+      req.body,
+    );
+    return reply.code(201).send(await addTask(app, p, b));
+  });
+
+  server.delete("/v1/pilots/:id/tasks/:task", async (req) => {
+    const { id, task } = req.params as { id: string; task: string };
+    const t = await cancelTask(app, (await pilotOr404(id)).id, task);
+    if (!t) throw new NotFound("task not found");
+    return t;
   });
 
   server.get("/v1/pilots/:id/perps", async (req) => {

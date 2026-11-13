@@ -188,7 +188,8 @@ export class FeeLedger {
     const periodStart = periodEnd - PERIOD_MS;
     if (!this.d.nft.contract) return { skipped: "STRATEGY_NFT_CONTRACT is not set: no script NFT to pay" };
     if (p.swarm?.scripts.length) return { skipped: "swarm pilots: fees per sleeve are not computed yet" };
-    const script = await this.scriptOf(pilotId, periodEnd);
+    // A pilot copying a script NFT pays that NFT's holder, whatever code hash the local build has.
+    const script = p.following ? { code_hash: "", token_id: p.following.token_id } : await this.scriptOf(pilotId, periodEnd);
     if (!script) return { skipped: "no run with a known script before the end of the week" };
     if (!script.token_id) return { skipped: "this script has no NFT: nobody to pay" };
     const tokenId = script.token_id;
