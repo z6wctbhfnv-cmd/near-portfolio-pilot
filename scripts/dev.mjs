@@ -42,16 +42,15 @@ function stop(code = 0) {
 process.on("SIGINT", () => stop(0));
 process.on("SIGTERM", () => stop(0));
 
-run("backend", "backend", ["start"], { PORT: backendPort, HOST: "127.0.0.1" });
-run("site", "frontend", ["run", "dev", "--", "-p", sitePort], { NEXT_PUBLIC_API_BASE: api });
+run("backend", "backend", ["start"], { PORT: backendPort, HOST: "127.0.0.1", LOG_LEVEL: process.env.LOG_LEVEL ?? "warn" });
+run("site", "frontend", ["exec", "--", "next", "dev", "-p", sitePort], { NEXT_PUBLIC_API_BASE: api });
 
-for (let i = 0; i < 120 && !stopping; i++) {
-  try {
-    const r = await fetch(`${api}/health`);
-    if (r.ok) {
-      console.log(`\n  dolya is running (paper mode: no keys, no money)\n  site     http://localhost:${sitePort}\n  backend  ${api}\n  Open the site → Portfolio → "Start with $1,000 of paper money".\n`);
-      break;
-    }
-  } catch { /* not up yet */ }
+const up = async (url) => { try { return (await fetch(url)).ok; } catch { return false; } };
+for (let i = 0; i < 240 && !stopping; i++) {
+  // The site's first page compiles on demand, so the first answer can take a while.
+  if ((await up(`${api}/health`)) && (await up(`http://localhost:${sitePort}/`))) {
+    console.log(`\n  dolya is running (paper mode: no keys, no money)\n  site     http://localhost:${sitePort}\n  backend  ${api}\n  Open the site → Portfolio → "Start with $1,000 of paper money".\n  Ctrl+C stops both.\n`);
+    break;
+  }
   await new Promise((r) => setTimeout(r, 500));
 }

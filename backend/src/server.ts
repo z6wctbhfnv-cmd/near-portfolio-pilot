@@ -83,7 +83,7 @@ function body<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
 }
 
 export function buildServer(app: App) {
-  const server = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { level: "info" }, bodyLimit: 1_000_000 });
+  const server = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: 1_000_000 });
   // Browsers may call from CORS_ORIGINS only (comma-separated); unset = any origin (local development).
   const origins = app.cfg.CORS_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean);
   // PATCH and PUT are needed by the web apps (pause/freeze, change strategy); the default allows only GET, HEAD, POST.

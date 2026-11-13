@@ -10,7 +10,9 @@ import { openDb } from "../src/db.js";
 import { DEFAULT_UNIVERSE } from "../src/tokens.js";
 import { StrategyWasm } from "../src/wasm.js";
 
-export const WASM_PATH = new URL("../../strategies/target/wasm32-wasip1/release/pilot-strategies.wasm", import.meta.url).pathname;
+/** The committed build (backend/wasm), so the whole suite runs on a fresh clone without Rust; else a local build. */
+const COMMITTED_WASM = new URL("../wasm/pilot-strategies.wasm", import.meta.url).pathname;
+export const WASM_PATH = existsSync(COMMITTED_WASM) ? COMMITTED_WASM : new URL("../../strategies/target/wasm32-wasip1/release/pilot-strategies.wasm", import.meta.url).pathname;
 export const wasmBuilt = existsSync(WASM_PATH);
 
 const PRICES: Record<string, number> = { USDC: 1, USDT: 1, NEAR: 4, BTC: 70_000, ETH: 2_000, SOL: 100, ZEC: 500 };
