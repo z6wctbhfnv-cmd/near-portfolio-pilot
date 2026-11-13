@@ -41,6 +41,8 @@ The tour boots the real backend in one process with a throwaway database and cal
 
 It ends with `9/9 steps passed`.
 
+The tour needs internet: it reads live prices (NEAR Intents token list, with public spot prices as fallback), daily price history and the testnet contract. Without network, `npm test` exercises the same paths against in-process fakes.
+
 ### The site: do X, see Y
 
 Run `npm run dev` and open http://localhost:3000.
