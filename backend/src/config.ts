@@ -81,8 +81,16 @@ const schema = z.object({
 
   NEAR_ACCOUNT_ID: optional,
   NEAR_PRIVATE_KEY: optional,
-  NEAR_RPC_URL: z.string().default("https://rpc.mainnet.fastnear.com"),
-  STRATEGY_NFT_CONTRACT: optional,
+  /** RPC of the network the strategy NFT contract lives on (testnet today). */
+  NEAR_RPC_URL: z.string().default("https://test.rpc.fastnear.com"),
+  /**
+   * The strategy NFT contract. Defaults to the testnet deployment, so a fresh clone reads real
+   * holders, bonds and copy fees with no setup; set it to an empty string to run without a contract.
+   */
+  STRATEGY_NFT_CONTRACT: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined ? "pilot-nft2-14805.testnet" : v.trim() === "" ? undefined : v.trim())),
 
   /**
    * Weekly copy fees (5% of new profit to the NFT holder by default, 0.25% to Pilot). The ledger is

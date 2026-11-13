@@ -15,7 +15,8 @@
     "fetch-history": "tsx src/cli/fetch-history.ts",
     "smoke": "tsx src/cli/smoke.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "tour": "tsx src/cli/tour.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {

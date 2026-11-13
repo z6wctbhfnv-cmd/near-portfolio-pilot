@@ -382,6 +382,7 @@ export function testApp(env: Record<string, string> = {}, deps: { wasm?: Strateg
     STRATEGY_WASM_PATH: WASM_PATH,
     STRATEGY_ENGINE: "local",
     SCHEDULER_ENABLED: "false",
+    STRATEGY_NFT_CONTRACT: "", // no contract unless a test names one (the default is the testnet deployment)
     ...env,
   });
   const app = buildApp(cfg, { fetch: fetchImpl, db: openDb(":memory:"), settleWaitMs: 0, ...(deps.wasm ? { wasm: deps.wasm } : {}) });

@@ -14,6 +14,22 @@ export class PriceHistory {
     private readonly f: typeof fetch = fetch,
   ) {}
 
+  /** GET with two retries: public market-data hosts drop a connection now and then. */
+  private async get(url: string): Promise<Response> {
+    let last: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await this.f(url, { signal: AbortSignal.timeout(30_000) });
+        if (res.status < 500 && res.status !== 429) return res;
+        last = new Error(`HTTP ${res.status}`);
+      } catch (e) {
+        last = e;
+      }
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+    throw new Error(`price history unavailable (${(last as Error)?.message ?? "no answer"}); try again in a minute`);
+  }
+
   /** Downloads daily klines from Binance's public market-data API into the cache. */
   async sync(symbol: string, fromMs: number, toMs = Date.now()): Promise<number> {
     const u = DEFAULT_UNIVERSE.find((a) => a.symbol === symbol);
@@ -25,7 +41,7 @@ export class PriceHistory {
     const sql = "INSERT OR REPLACE INTO price_history (symbol, day, close) VALUES (?, ?, ?)";
     while (start <= end) {
       const url = `${this.baseUrl.replace(/\/$/, "")}/api/v3/klines?symbol=${u.history_symbol}&interval=1d&startTime=${start}&limit=1000`;
-      const res = await this.f(url, { signal: AbortSignal.timeout(30_000) });
+      const res = await this.get(url);
       if (!res.ok) throw new Error(`history ${u.history_symbol} ${res.status}`);
       const rows = (await res.json()) as Kline[];
       if (!rows.length) break;
