@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { captureRef, clearRef, inviteLink, storedRef } from "@/lib/referral";
 import { referrerOf } from "@/lib/chain";
+import { api, currentPilotId } from "@/lib/api";
 import { NFT } from "@/lib/config";
 import { useWallet } from "./wallet";
 import { NftActionSheet, useNftWallet, type NftAction } from "./nftWallet";
@@ -23,6 +24,7 @@ export function InviteCard() {
   const [copied, setCopied] = useState(false);
   const [action, setAction] = useState<NftAction | null>(null);
 
+  const [pilotMsg, setPilotMsg] = useState<string | null>(null);
   useEffect(() => { setRef(storedRef()); }, []);
   useEffect(() => {
     if (!nft) { setOnChain(undefined); return; }
@@ -65,9 +67,18 @@ export function InviteCard() {
                   why: `Saves ${ref.ref} as your referrer on the NFT contract. Once only; you pay the few bytes of storage and get the rest of the 0.01 NEAR back.` })}>
                 Record on {NFT.network}
               </motion.button>
+              <motion.button whileTap={{ scale: 0.95 }} className="rounded-[12px] bg-white px-3 py-2 font-semibold text-yel-deep"
+                onClick={async () => {
+                  const pid = currentPilotId();
+                  if (!pid) { setPilotMsg("Start a portfolio first, then save who invited you."); return; }
+                  try { const r = await api.referrer(pid, ref.ref); setPilotMsg(r.note); } catch (e) { setPilotMsg((e as Error).message); }
+                }}>
+                Save for my portfolio
+              </motion.button>
               <button onClick={() => { clearRef(); setRef(null); }} className="rounded-[12px] px-3 py-2 font-semibold text-dim">Forget it</button>
             </div>
           ) : null}
+          {pilotMsg && <p className="mt-2 text-[13px] text-ink/80" role="status">{pilotMsg}</p>}
         </div>
       )}
       <NftActionSheet action={action} onClose={() => setAction(null)} onDone={() => nft && referrerOf(nft).then(setOnChain).catch(() => {})} />

@@ -8,6 +8,7 @@ import { nearToYocto, yoctoToNearExact, periodStats, recordChange, scriptTitle, 
 import { NFT, explorerAccount } from "@/lib/config";
 import { sha256 } from "@/lib/scriptCheck";
 import type { LeaderRow } from "@/lib/useLeaderboard";
+import { api, currentPilotId } from "@/lib/api";
 
 const day = (ms: number) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 const pctFee = (bps: number) => `${(bps / 100).toFixed(bps % 100 ? 2 : 0)}%`;
@@ -63,6 +64,17 @@ export function ScriptSheetBody({ row, days, periodLabel, onChanged }: { row: Le
   const st = raw && raw.days > 0 ? raw : null;
   const change = c ? recordChange(c.record) : null;
   const bondOk = c ? c.bond.held >= c.bond.required : false;
+  const runnable = /^wasm-(rebalance|trend|vol-target|dca)@/.test(row.id);
+  const [copy, setCopy] = useState<{ busy: boolean; ok?: boolean; text?: string }>({ busy: false });
+  const doCopy = async () => {
+    const pid = currentPilotId();
+    if (!pid) { setCopy({ busy: false, ok: false, text: "Start a portfolio first (Portfolio → Start with paper money), then copy this script into it." }); return; }
+    setCopy({ busy: true });
+    try {
+      const r = await api.follow(pid, row.id);
+      setCopy({ busy: false, ok: true, text: `${r.note} Open Portfolio to see it run.` });
+    } catch (e) { setCopy({ busy: false, ok: false, text: (e as Error).message }); }
+  };
   const who = c?.holder;
 
   const tune = (name: string, v: number) => {
@@ -139,10 +151,16 @@ export function ScriptSheetBody({ row, days, periodLabel, onChanged }: { row: Le
             <p className="mt-2 text-[13px] text-dim">Saved in this browser for when copying opens. Your values trade your money only; the public record stays on the holder’s defaults.</p>
           </div>
         ) : <p className="mt-2 text-[14px] text-dim">The holder opened no settings for copiers.</p>}
-        <button disabled className="btn btn-gray mt-3 w-full">Copy · {c ? pctFee(c.fee.bps) : "5%"} of new profit</button>
+        <motion.button whileTap={{ scale: 0.97 }} onClick={doCopy} disabled={copy.busy || !runnable}
+          className={`btn mt-3 w-full ${runnable ? "btn-yel" : "btn-gray"} disabled:opacity-60`}>
+          {copy.busy ? "Copying…" : runnable ? `Copy into my paper portfolio · ${c ? pctFee(c.fee.bps) : "5%"} of new profit` : "Runs in the research engine only"}
+        </motion.button>
+        {copy.text && <p role="status" className={`mt-2 rounded-[14px] px-3 py-2 text-[14px] ${copy.ok ? "bg-[#e8f7ee] text-up" : "bg-[#fdecea] text-down"}`}>{copy.text}</p>}
         <p className="mt-2 text-[14px] leading-snug text-dim">
-          {c && !bondOk ? <>Copying is closed: the holder has to lock a ${c.bond.required.toFixed(0)} bond first. </> : null}
-          Coming soon: <code className="text-[13px]">follow</code> is signed by your agent’s account, not your wallet, so it goes through the backend once that route exists.
+          {c && !bondOk ? <>On chain, copying waits until the holder locks a ${c.bond.required.toFixed(0)} bond. </> : null}
+          {runnable
+            ? "A paper portfolio copies right away. A live copy needs the strategy NFT contract on mainnet, where your agent can sign follow."
+            : "dolya’s runner executes the four WASM scripts (rebalance, trend, volatility target, weekly buys); this one runs only in the research engine for now."}
         </p>
       </Section>
 

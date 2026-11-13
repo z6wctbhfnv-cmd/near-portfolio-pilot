@@ -18,9 +18,9 @@ export function WalletButton() {
   if (!accountId) {
     return (
       <motion.button onClick={connect} disabled={!ready} whileHover={{ y: -2 }} whileTap={{ scale: 0.95 }}
-        className="btn btn-yel group !h-11 !rounded-[14px] !px-4 !text-[15px]">
+        className="btn btn-yel group !h-11 shrink-0 whitespace-nowrap !rounded-[14px] !px-3 !text-[15px] sm:!px-4">
         <motion.img src="/3d/wallet.png" alt="" className="-ml-1 h-7 w-7" whileHover={{ rotate: -12 }} />
-        Connect wallet
+        <span className="sm:hidden">Connect</span><span className="hidden sm:inline">Connect wallet</span>
       </motion.button>
     );
   }

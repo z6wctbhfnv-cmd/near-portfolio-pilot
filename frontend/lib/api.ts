@@ -42,6 +42,7 @@ export type ParseResult = { mandate: Mandate; notes: string[]; warnings: string[
 export type Pilot = {
   id: string; name: string; status: string; mode: "paper" | "live"; owner: Owner | null;
   mandate: Mandate; strategy: StrategyRef; paper_holdings?: Record<string, number>;
+  following?: Following; referrer?: string | null; swarm?: Swarm["swarm"];
   next_run_at: number; next_review_at: number; created_at: number;
 };
 export type Portfolio = { rows: { symbol: string; units: number; price: number; usd: number }[]; total_usd: number; source: string };
@@ -55,6 +56,19 @@ export type Backtest = { metrics?: Record<string, number>; benchmark?: Record<st
 export type UniverseAsset = { symbol: string; price: number; stable: boolean; listed: boolean };
 export type IntentStatus = { status: string; failure_code?: string | null; details?: Record<string, unknown>; [k: string]: unknown };
 export type PendingIntent = { correlation_id: string; type: string; status: string; created_at: number };
+
+
+/* ---------- social, fees, health, swarm (backend PR #14 + follow-up) ---------- */
+export type Following = { token_id: string; strategy_id: string; since: number } | null;
+export type FeeRow = { id: string; period_end_ms: number; status: string; token_id: string; holder: string | null; equity_usd: number; hwm_usd: number; profit_usd: number; holder_bps: number; payment_bps: number; fee_usd: number; hwm_after_usd: number | null; kind: string; error: string | null; [k: string]: unknown };
+export type FeeEstimate = { equity_usd: number; peak_usd: number; profit_usd: number; fee_usd: number; holder_usd: number; platform_usd: number; payment_bps: number } | null;
+export type Fees = { terms: { holder_bps_default: number; platform_bps: number; referral_bps_of_platform: number; payments_enabled: boolean }; following: Following; estimate: FeeEstimate; peaks: unknown[]; data: FeeRow[] };
+export type Gate = { token_id: string | null; holder: string | null; own: boolean; held_usd: number | null; required_usd: number | null; open: boolean; reason: string; strategy?: string };
+export type Finding = { check: string; severity: "ok" | "warn" | "stop" | "muted"; detail: string };
+export type HealthCheck = { id: string; day: number; status: "ok" | "warn" | "stop"; findings: Finding[]; question: { text: string; options: { id: "pause" | "keep"; label: string }[] } | null; answer: "pause" | "keep" | null; answered_at: number | null; created_at: number };
+export type SwarmScript = { key: string; id: string; params: Record<string, unknown>; weight?: number; cap?: number };
+export type Swarm = { swarm: { scripts: SwarmScript[]; allocation?: string } | null; state: { alloc: Record<string, number>; alloc_reason: string; sleeves: { key: string; cash: boolean; share: number | null; value_usd: number }[] } | null };
+export type PriceTask = { id: string; asset: string; op: "<" | ">"; price: number; side: "buy" | "sell"; usd: number; status: string; text: string | null; fired_at: number | null; fired_price: number | null };
 
 const list = <T,>(p: Promise<{ data: T[] }>) => p.then((r) => r.data);
 
@@ -89,6 +103,25 @@ export const api = {
   pilotIntents: (id: string) => list<PendingIntent>(req(`/v1/pilots/${id}/intents`)),
   submitIntent: (cid: string, signed_data: Record<string, unknown>) => req<IntentStatus>(`/v1/intents/${encodeURIComponent(cid)}/submit`, { json: { signed_data } }),
   intentStatus: (cid: string, waitMs = 0) => req<{ status: IntentStatus; generated?: OwnerAction }>(`/v1/intents/${encodeURIComponent(cid)}?wait_ms=${waitMs}`),
+
+
+  /* copying, fees, health, swarm, tasks, referrer */
+  follow: (id: string, token_id: string) => req<{ pilot: Pilot; gate: Gate; note: string }>(`/v1/pilots/${id}/follow`, { json: { token_id } }),
+  unfollow: (id: string) => req<{ pilot: Pilot }>(`/v1/pilots/${id}/unfollow`, { json: {} }),
+  scriptGate: (token: string) => req<Gate>(`/v1/scripts/${encodeURIComponent(token)}/gate`),
+  copyGate: (id: string) => req<{ bond_gate: string; data: Gate[] }>(`/v1/pilots/${id}/copy-gate`),
+  fees: (id: string) => req<Fees>(`/v1/pilots/${id}/fees`),
+  settleFees: (id: string) => req<unknown>(`/v1/pilots/${id}/fees/settle`, { json: {} }),
+  pilotHealth: (id: string) => req<{ latest: HealthCheck | null; data: HealthCheck[] }>(`/v1/pilots/${id}/health`),
+  healthCheck: (id: string) => req<HealthCheck>(`/v1/pilots/${id}/health/check`, { json: {} }),
+  healthAnswer: (checkId: string, answer: "pause" | "keep") => req<HealthCheck>(`/v1/health/${checkId}/answer`, { json: { answer } }),
+  swarm: (id: string) => req<Swarm>(`/v1/pilots/${id}/swarm`),
+  setSwarm: (id: string, body: { scripts: SwarmScript[]; allocation?: "equal" | "manual" | "calm" }) => req<{ pilot: Pilot }>(`/v1/pilots/${id}/swarm`, { method: "PUT", json: body }),
+  clearSwarm: (id: string) => req<{ pilot: Pilot }>(`/v1/pilots/${id}/swarm`, { method: "DELETE" }),
+  tasks: (id: string) => list<PriceTask>(req(`/v1/pilots/${id}/tasks`)),
+  addTask: (id: string, t: { asset: string; op: "<" | ">"; price: number; side: "buy" | "sell"; usd: number; text?: string }) => req<PriceTask>(`/v1/pilots/${id}/tasks`, { json: t }),
+  cancelTask: (id: string, taskId: string) => req<PriceTask>(`/v1/pilots/${id}/tasks/${taskId}`, { method: "DELETE" }),
+  referrer: (id: string, referrer: string) => req<{ pilot: Pilot; note: string }>(`/v1/pilots/${id}/referrer`, { json: { referrer } }),
 
   /** NEAR AI drafts a script from an idea (needs NEARAI_API_KEY on the backend). */
   draftScript: (idea: string) => req<{ code: string; model: string }>("/v1/scripts/draft", { json: { idea } }),

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { holdings, moves, series, stories, total, usd, type Move } from "@/lib/demo";
+import { series, stories, usd, type Move } from "@/lib/demo";
 import { Mark } from "./Logo";
 
 export const spring = { type: "spring", stiffness: 420, damping: 34 } as const;
@@ -189,37 +189,3 @@ export function MoveDetail({ m }: { m: Move }) {
   );
 }
 
-/** The wallet screen used inside the landing-page phone and as the real dashboard. */
-export function WalletScreen({ compact = false }: { compact?: boolean }) {
-  const [open, setOpen] = useState<Move | null>(null);
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="card p-5">
-        <div className="flex items-center justify-between">
-          <span className="text-[15px] text-dim">you.near</span>
-          <Mark size={28} />
-        </div>
-        <p className="display num mt-3 text-[44px]">{usd(total)}</p>
-        <p className="mt-1 text-[15px]"><span className="num font-semibold text-up">+$412</span> <span className="text-dim">this month</span></p>
-        <div className="mt-5 grid grid-cols-4">
-          <Action icon="+" label="Add" active />
-          <Action icon="⇄" label="Swap" />
-          <Action icon="≡" label="Rules" />
-          <Action icon="❄" label="Freeze" />
-        </div>
-      </div>
-      {!compact && <div className="card p-5"><Chart /></div>}
-      <div className="card p-3">
-        <p className="px-2 pb-1 pt-1 text-[20px] font-bold">Assets</p>
-        {holdings.slice(0, compact ? 3 : 4).map((h) => <AssetRow key={h.sym} h={h} />)}
-      </div>
-      {!compact && (
-        <div className="card p-3">
-          <p className="px-2 pb-1 pt-1 text-[20px] font-bold">Moves, explained</p>
-          {moves.map((m) => <MoveRow key={m.id} m={m} onClick={() => setOpen(m)} />)}
-          <Sheet open={!!open} onClose={() => setOpen(null)}>{open && <MoveDetail m={open} />}</Sheet>
-        </div>
-      )}
-    </div>
-  );
-}
