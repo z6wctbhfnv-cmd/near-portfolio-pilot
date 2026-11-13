@@ -1,4 +1,43 @@
-# Handoff: backend gap work, 13 Nov 2026
+# Handoff
+
+## Where the project stands (13 Nov 2026, the full dolya)
+
+Branch `dolya-full` joins the backend gap work and the dolya site, puts every backend feature on the site, and makes a fresh clone runnable with no setup. Nothing in it moved real money or wrote on chain.
+
+**Run it:** `npm run setup`, then `npm run tour` (9 steps, exit code 0), `npm test`, `npm run dev`. The README has the "do X, see Y" tables.
+
+| Checked | Result |
+|---|---|
+| Backend | `npm test`: 89 tests against fakes (Agent API, NEAR RPC, OutLayer, NEAR AI, Hyperliquid testnet, market data) |
+| Judge tour | `npm run tour`: 9/9 steps on live public prices and testnet reads, about a minute |
+| NFT contract | `cargo test`: 63 tests (9 new for offers); `cargo near build non-reproducible-wasm --no-abi` builds |
+| Strategies | `cargo test`: 10 tests |
+| Secrets | The history of every branch scanned for keys and tokens: only test dummies and `.env.example` |
+| Site | Every screen at 12 widths from 320 to 1920 px: no horizontal overflow, no clipped or unrevealed headline, no console errors; flows walked in a headless browser |
+
+**New since the gap PRs**
+
+- Site: no invented balances (an empty state and a one-click paper portfolio); dashboard cards for the health check, copying, fees and the swarm; copy from the leaderboard; price tasks run by the backend; a Strategy NFTs section on the landing page; engine backtests for the copyable scripts on the leaderboard.
+- Backend: `follow` / `unfollow` (paper), `GET /v1/scripts/:token/gate`, referrer, price tasks with a watcher, a daily option on backtests, a price-source fallback chain, the strategy NFT contract defaulting to the testnet deployment.
+- Contract: offers held in escrow (`make_offer`, `cancel_offer`, `accept_offer`, views `offers`, `offer_of`), stored under new prefixes so the deployed contract upgrades without a migration.
+- Repo: root `npm run setup | tour | test | dev`.
+
+**Still open, and whose move it is**
+
+| What | Who | Why it matters |
+|---|---|---|
+| Merge `dolya-full` into `main` and make the repository public | Repo owner | Judges clone the default branch; a private repo cannot be judged |
+| Upgrade the testnet contract `pilot-nft2-14805.testnet` to the repo's build | Whoever holds its key | Offers and on-chain fee crediting are in the code but not in the deployed contract |
+| Creator bonds ($100 of test USDC per script) on testnet | The scripts' holder `pilot-author-10734.testnet` | Until then the chain says copying is closed, and the site copies on paper only |
+| Partner key for the Agent API, a small deposit | Owner | Live mode has only ever run against a fake API |
+| NEAR AI key | Owner | Without it the rule-based fallbacks answer |
+| Demo video, X post, submission form | Owner | See [docs/SUBMISSION.md](docs/SUBMISSION.md) and [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) |
+
+The sections below are the earlier handoffs, kept for their detail.
+
+---
+
+## Backend gap work, 13 Nov 2026
 
 Six backend items from the gap list. Nothing here moved real money, sent a live request, or wrote on chain (testnet included); only testnet views were read.
 
