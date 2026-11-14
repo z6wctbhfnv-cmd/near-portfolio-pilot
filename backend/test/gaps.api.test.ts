@@ -27,7 +27,7 @@ function setup(env: Record<string, string> = {}, deps: { wasm?: StrategyWasm } =
   const server = buildServer(t.app);
   servers.push(server);
   const call = async (method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", url: string, payload?: unknown) => {
-    const res = await server.inject({ method, url, payload: payload as never });
+    const res = await server.inject({ method, url, payload: payload as never, headers: { authorization: "Bearer test-admin" } });
     return { status: res.statusCode, body: res.json() as any };
   };
   /** Mints the script on the fake chain, held by `holder`. */

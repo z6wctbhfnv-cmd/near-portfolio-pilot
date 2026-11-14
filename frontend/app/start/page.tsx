@@ -141,7 +141,7 @@ export default function Start() {
       // could differ from what was shown (and takes another 10–20 s).
       const name = accountId ? `${accountId} pilot` : "My pilot";
       const r = await api.createPilot(mandate ? { name, mandate, initial_usd: amount } : { name, text, initial_usd: amount });
-      setCurrentPilotId(r.pilot.id);
+      setCurrentPilotId(r.pilot.id, r.pilot_key);
       setDone("paper");
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
@@ -153,7 +153,7 @@ export default function Start() {
     try {
       const r = await api.createPilot({ name: owner.type === "near" ? `${owner.account_id} pilot` : "My pilot", mode: "live", mandate, owner, accepted_terms: true, initial_usd: amount });
       if (!r.owner_action) throw new Error("The backend created the pilot but sent nothing to sign.");
-      setCurrentPilotId(r.pilot.id);
+      setCurrentPilotId(r.pilot.id, r.pilot_key);
       setPilotId(r.pilot.id);
       setAction(r.owner_action);
       setStep(3);

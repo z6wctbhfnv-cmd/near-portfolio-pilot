@@ -20,8 +20,10 @@ const app = buildApp(cfg, { db: openDb(":memory:") });
 const server = buildServer(app);
 
 type Json = Record<string, any>;
+// The tour acts as the pilot's owner: it sends the key the backend hands out when the pilot is made.
+let pilotKey = "";
 async function call(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", url: string, payload?: unknown): Promise<Json> {
-  const res = await server.inject({ method, url, payload: payload as never });
+  const res = await server.inject({ method, url, payload: payload as never, headers: pilotKey ? { "x-pilot-key": pilotKey } : {} });
   const body = res.json() as Json;
   if (res.statusCode >= 400) throw new Error(`${method} ${url} → ${res.statusCode} ${body?.error?.code ?? ""}: ${body?.error?.message ?? ""}`);
   return body;
@@ -72,6 +74,7 @@ step("Try it on history before any money moves", "POST /v1/strategies/:id/backte
 
 step("Start a paper portfolio and get a reason for every move", "POST /v1/pilots, POST /v1/pilots/:id/run", async () => {
   const c = await call("POST", "/v1/pilots", { name: "Judge tour", mode: "paper", mandate, strategy, initial_usd: 1000 });
+  pilotKey = c.pilot_key;
   pilotId = c.pilot.id;
   const run = await call("POST", `/v1/pilots/${pilotId}/run`);
   check(run.status === "ok", `the run finished ok (${run.error ?? ""})`);
@@ -106,7 +109,7 @@ step("Copy a strategy NFT: your agent follows it inside your own rules", "GET /v
   see(`fees         ${holderBps / 100}% of new profit to the NFT holder + ${fees.terms.platform_bps / 100}% to dolya, weekly, only above the previous peak`);
   if (fees.estimate) see(`this week    value ${usd(fees.estimate.equity_usd)}, peak ${usd(fees.estimate.peak_usd)}, new profit ${usd(fees.estimate.profit_usd)} → fee ${usd(fees.estimate.fee_usd)}`);
   check(fees.terms.platform_bps === 25, "platform fee is 0.25%");
-  const bad = await server.inject({ method: "POST", url: `/v1/pilots/${pilotId}/follow`, payload: { token_id: "donchian-breakout@v1" } });
+  const bad = await server.inject({ method: "POST", url: `/v1/pilots/${pilotId}/follow`, payload: { token_id: "donchian-breakout@v1" }, headers: { "x-pilot-key": pilotKey } });
   check(bad.statusCode === 409, "a research-only script is refused with a reason");
   see(`refused      donchian-breakout@v1: ${(bad.json() as Json).error.message}`);
 });
@@ -165,7 +168,7 @@ step("Freeze: one tap and nothing trades", "PATCH /v1/pilots/:id {paused: true},
   const after = ((await call("GET", `/v1/pilots/${pilotId}/runs`)).data as Json[]).length;
   check(after === before, "a paused pilot is not run by the scheduler");
   see(`paused       scheduler tick ran: ${after - before} new runs`);
-  const manual = await server.inject({ method: "POST", url: `/v1/pilots/${pilotId}/run` });
+  const manual = await server.inject({ method: "POST", url: `/v1/pilots/${pilotId}/run`, headers: { "x-pilot-key": pilotKey } });
   see(`manual run   ${manual.statusCode === 200 ? "allowed (the owner asked for it)" : `refused: ${(manual.json() as Json).error?.message}`}`);
   await call("PATCH", `/v1/pilots/${pilotId}`, { paused: false });
   see("resumed      the pilot is active again");

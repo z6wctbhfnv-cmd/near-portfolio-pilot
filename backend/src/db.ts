@@ -266,6 +266,8 @@ export class Db {
         "ALTER TABLE pilots ADD COLUMN following_json TEXT",
         // Who referred this owner (NEAR account), recorded on chain by the agent once live.
         "ALTER TABLE pilots ADD COLUMN referrer TEXT",
+        // sha256 of the pilot key handed to its creator once; every pilot route needs the key.
+        "ALTER TABLE pilots ADD COLUMN key_hash TEXT",
       ]) {
         try {
           await client.execute(sql);

@@ -376,6 +376,8 @@ export function testApp(env: Record<string, string> = {}, deps: { wasm?: Strateg
   const cfg = loadConfig({
     DATABASE_PATH: ":memory:",
     PILOT_MASTER_KEY: "test-master-key",
+    // Tests act as the operator unless they test pilot keys themselves (see "pilot keys" in api.test.ts).
+    PILOT_API_TOKEN: "test-admin",
     NEAR_INTENTS_AGENT_API_URL: "https://agent.test",
     NEAR_INTENTS_AGENT_API_KEY: "test-partner-key",
     HISTORY_API_URL: "https://klines.test",
@@ -390,3 +392,6 @@ export function testApp(env: Record<string, string> = {}, deps: { wasm?: Strateg
   const app = buildApp(cfg, { fetch: fetchImpl, db: openDb(":memory:"), settleWaitMs: 0, ...(deps.wasm ? { wasm: deps.wasm } : {}) });
   return { app, agent, ai, outlayer, chain, hl, cfg, fetch: fetchImpl };
 }
+
+/** Operator header for test requests (PILOT_API_TOKEN above). */
+export const ADMIN = { authorization: "Bearer test-admin" };

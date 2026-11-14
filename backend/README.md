@@ -6,7 +6,7 @@ TypeScript on Node 24: Fastify, libSQL (a local SQLite file, or Turso) and the o
 
 ## Routes
 
-Every response is JSON. Errors look like `{ "error": { "code", "message", ... } }`. Agent API errors keep their own `code` and `layer`. When `PILOT_API_TOKEN` is set, every route except `/health` and `/v1/config` needs `Authorization: Bearer <token>`.
+Every response is JSON. Errors look like `{ "error": { "code", "message", ... } }`. Agent API errors keep their own `code` and `layer`. **Access.** `POST /v1/pilots` returns a `pilot_key` once (only its hash is stored). Every route of that pilot, and its runs, executions, reviews, intents, fee ledger entries and health checks, needs `X-Pilot-Key: <key>`; anything else gets 401. `GET /v1/pilots` (all pilots) is operator-only. `PILOT_API_TOKEN` is the operator token: `Authorization: Bearer <token>` opens every route. Pilots created before keys existed stay open.
 
 ### Meta
 | Method | Path | |

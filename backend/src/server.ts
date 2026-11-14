@@ -2,7 +2,7 @@
 import cors from "@fastify/cors";
 import { AgentApiError, AgentApiRequestError, type GenerateIntentRequest, type OwnerWallet, type SignedData } from "@near-intents-agent-api/sdk";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { ConfigError, NotFound } from "./agent.js";
 import { type App, applyIntentResult, tick } from "./app.js";
@@ -21,7 +21,6 @@ import { DEFAULT_UNIVERSE, universeBySymbol } from "./tokens.js";
 const DAY = 86_400_000;
 export const RISK_NOTICE =
   "The Agent API is an experimental, mainnet-only beta. You and your users may lose all assets used with it, or lose access to them. It is operated by NEAR Technologies Limited. NEAR Portfolio Pilot is an unaudited hackathon prototype; read DISCLAIMER.md.";
-const PUBLIC = new Set(["/health", "/v1/config", "/v1/cron"]);
 
 const SCRIPT_PROMPT = `You write trading scripts for Pilot. Output ONLY Python code, no prose, no markdown fences.
 Exactly one function: def target(daily):
@@ -89,16 +88,63 @@ export function buildServer(app: App) {
   // PATCH and PUT are needed by the web apps (pause/freeze, change strategy); the default allows only GET, HEAD, POST.
   void server.register(cors, { origin: origins?.length ? origins : true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
 
-  server.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
+  // PILOT_API_TOKEN is the operator's admin token (the IronClaw skill, scripts): with it every route
+  // is open. Browsers never hold it; they prove ownership of one pilot with its pilot key instead.
+  const isAdmin = (req: FastifyRequest) => {
     const token = app.cfg.PILOT_API_TOKEN;
-    if (!token || PUBLIC.has(req.url.split("?")[0]!) || req.method === "OPTIONS") return;
-    const got = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-    const a = Buffer.from(got);
-    const b = Buffer.from(token);
-    if (a.length !== b.length || !timingSafeEqual(a, b)) {
-      return reply.code(401).send({ error: { code: "unauthorized", message: "missing or wrong bearer token" } });
+    if (!token) return false;
+    const got = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
+    const want = Buffer.from(token);
+    return got.length === want.length && timingSafeEqual(got, want);
+  };
+
+  // Which pilot a route acts on: its :id, or the owner of the run/execution/review/... it names.
+  const OWNER_OF: Array<[string, string]> = [
+    ["/v1/runs/", "SELECT pilot_id FROM runs WHERE id = ?"],
+    ["/v1/executions/", "SELECT pilot_id FROM executions WHERE id = ?"],
+    ["/v1/reviews/", "SELECT pilot_id FROM reviews WHERE id = ?"],
+    ["/v1/intents/", "SELECT pilot_id FROM owner_intents WHERE correlation_id = ?"],
+    ["/v1/fees/", "SELECT pilot_id FROM fee_ledger WHERE id = ?"],
+    ["/v1/health/", "SELECT pilot_id FROM health_checks WHERE id = ?"],
+  ];
+  const pilotOfRoute = async (req: FastifyRequest): Promise<string | null> => {
+    const route = req.routeOptions.url ?? "";
+    const params = (req.params ?? {}) as Record<string, string>;
+    if (route.startsWith("/v1/pilots/:id")) return params.id ?? null;
+    for (const [prefix, sql] of OWNER_OF) {
+      if (!route.startsWith(prefix)) continue;
+      const key = params.id ?? params.cid;
+      const row = key ? await app.db.prepare(sql).get<{ pilot_id: string | null }>(key) : undefined;
+      return row?.pilot_id ?? null;
+    }
+    return null;
+  };
+
+  server.addHook("preHandler", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (req.method === "OPTIONS" || isAdmin(req)) return;
+    const route = req.routeOptions.url ?? "";
+    // The full list of pilots is operator-only: it would show everyone's portfolios.
+    if (route === "/v1/pilots" && req.method === "GET") {
+      return reply.code(403).send({ error: { code: "forbidden", message: "listing all pilots needs the operator token" } });
+    }
+    const pilotId = await pilotOfRoute(req);
+    if (!pilotId) return; // not a pilot's route, or nothing found (the handler answers 404)
+    const row = await app.db.prepare("SELECT key_hash FROM pilots WHERE id = ?").get<{ key_hash: string | null }>(pilotId);
+    if (!row || !row.key_hash) return; // unknown (404 later) or created before pilot keys
+    const got = String(req.headers["x-pilot-key"] ?? "");
+    const hash = Buffer.from(createHash("sha256").update(got).digest("hex"));
+    const want = Buffer.from(row.key_hash);
+    if (!got || hash.length !== want.length || !timingSafeEqual(hash, want)) {
+      return reply.code(401).send({ error: { code: "pilot_key_required", message: "this pilot needs its key (X-Pilot-Key header)" } });
     }
   });
+
+  /** A new pilot's key: shown to its creator once, stored only as a hash. */
+  const issueKey = async (pilotId: string) => {
+    const key = `pk_${randomBytes(24).toString("base64url")}`;
+    await app.pilots.update(pilotId, { key_hash: createHash("sha256").update(key).digest("hex") });
+    return key;
+  };
 
   server.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, _req, reply) => {
     if (err instanceof HttpError || err instanceof SocialError) return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
@@ -249,7 +295,7 @@ export function buildServer(app: App) {
         review_auto_apply: b.review_auto_apply,
         review_every_days: app.cfg.REVIEW_EVERY_DAYS,
       });
-      return reply.code(201).send({ pilot: p, notes });
+      return reply.code(201).send({ pilot: p, pilot_key: await issueKey(p!.id), notes });
     }
 
     // Live: compile the policy and prepare agent_create for the owner's wallet.
@@ -283,7 +329,7 @@ export function buildServer(app: App) {
       await app.db.prepare("DELETE FROM pilots WHERE id = ?").run(p!.id); // nothing to sign: no half-created pilot
       throw e;
     }
-    return reply.code(201).send({ pilot: p, owner_action: generated, warnings, notes });
+    return reply.code(201).send({ pilot: p, pilot_key: await issueKey(p!.id), owner_action: generated, warnings, notes });
   });
 
   server.get("/v1/pilots", async () => ({ data: await app.pilots.list() }));

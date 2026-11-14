@@ -142,7 +142,7 @@ export function usePilot() {
   /** One click: a paper portfolio with $1,000 of paper money and balanced default rules. */
   const startPaper = () => act("start", async () => {
     const r = await api.createPilot({ name: "My paper portfolio", mode: "paper", text: "Balanced: NEAR, BTC and ETH. Max $300 a day, $100 per trade.", initial_usd: 1000 });
-    setCurrentPilotId(r.pilot.id);
+    setCurrentPilotId(r.pilot.id, r.pilot_key);
     await api.run(r.pilot.id).catch(() => undefined);
   });
   return {
