@@ -12,7 +12,8 @@ import { json, parse } from "./db.js";
 import { compilePolicy, type Mandate, MandateSchema, parseMandate, strategyForMandate } from "./mandate.js";
 import { copyGate } from "./copying.js";
 import { computeFee, DEFAULT_HOLDER_FEE_BPS, PLATFORM_FEE_BPS, REFERRAL_FEE_BPS } from "./fees.js";
-import { addTask, cancelTask, follow, listTasks, setReferrer, SocialError, tokenGate, unfollow } from "./social.js";
+import { addTask, cancelTask, follow, listTasks, setReferrer, SocialError, strategyForToken, tokenGate, unfollow } from "./social.js";
+import { registerScript, scriptByHash, scriptForToken } from "./scripts.js";
 import { scriptCodeHash } from "./nft.js";
 import { CASH, SwarmConfigSchema, valueOf } from "./swarm.js";
 import { catalog, isStrategyId, parseStrategyParams, STRATEGY_IDS, type StrategyId } from "./strategies.js";
@@ -680,6 +681,37 @@ export function buildServer(app: App) {
 
   // Bond gate for any script NFT, for the leaderboard (no pilot needed).
   server.get("/v1/scripts/:token/gate", async (req) => tokenGate(app, null, (req.params as { token: string }).token));
+
+  // A changed starter: one of the nine starter strategies with the user's own parameters. The
+  // response's code_hash is what the user mints as their script NFT (see scripts.ts).
+  server.post("/v1/scripts", async (req, reply) => {
+    const b = body(z.object({ base: z.string().min(2).max(40), params: z.record(z.string(), z.unknown()), name: z.string().max(80).optional() }), req.body);
+    try {
+      const script = await registerScript(app, b.base, b.params, b.name ?? null);
+      reply.code(201);
+      return script;
+    } catch (e) {
+      throw new HttpError(400, "validation_failed", (e as Error).message);
+    }
+  });
+
+  server.get("/v1/scripts/hash/:hash", async (req) => {
+    const hash = (req.params as { hash: string }).hash;
+    if (!/^[0-9a-f]{64}$/i.test(hash)) throw new HttpError(400, "validation_failed", "hash must be 64 hex characters");
+    const script = await scriptByHash(app, hash);
+    if (!script) throw new HttpError(404, "not_found", "no changed starter with this hash on this server");
+    return script;
+  });
+
+  // What dolya's runner can do with a script NFT: a starter, a changed starter, or research only.
+  server.get("/v1/scripts/:token/script", async (req) => {
+    const token = (req.params as { token: string }).token;
+    const starter = strategyForToken(token);
+    if (starter) return { token_id: token, runnable: true, kind: "starter", base: starter };
+    const script = await scriptForToken(app, token).catch(() => null);
+    if (script) return { token_id: token, runnable: true, kind: "changed", ...script };
+    return { token_id: token, runnable: false, kind: "research" };
+  });
 
   server.post("/v1/pilots/:id/referrer", async (req) => {
     const p = await pilotOr404((req.params as { id: string }).id);

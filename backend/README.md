@@ -77,9 +77,12 @@ A ledger row's `status`: `no_profit`, `carried` (under `MIN_FEE_USD`, charged wi
 ### Copying, referrer, price tasks
 | Method | Path | |
 |---|---|---|
-| POST | `/v1/pilots/:id/follow` | `{token_id}`: copy a script NFT. A paper pilot switches to that script (the four `wasm-*` scripts run in this engine) and its fee ledger pays the NFT's holder. Answers `{pilot, gate, note}`; the gate is read from the contract. A live copy answers 409 `live_follow_unavailable` (the contract is on testnet, the Agent API is mainnet-only); a research-only script answers 409 `not_runnable` |
+| POST | `/v1/pilots/:id/follow` | `{token_id}`: copy a script NFT. A paper pilot switches to that script (the `wasm-*` starter NFTs, and changed starters registered with `POST /v1/scripts`, run in this engine) and its fee ledger pays the NFT's holder. Answers `{pilot, gate, note}`; the gate is read from the contract. A live copy answers 409 `live_follow_unavailable` (the contract is on testnet, the Agent API is mainnet-only); a research-only script answers 409 `not_runnable` |
 | POST | `/v1/pilots/:id/unfollow` | stop copying |
 | GET | `/v1/scripts/:token/gate` | the bond gate for any script NFT, no pilot needed: `holder`, `held_usd`, `required_usd`, `open`, `reason` |
+| POST | `/v1/scripts` | `{base, params, name?}`: a changed starter, one of the nine starter strategies with your own parameters. Answers 201 `{code_hash, base, base_name, params, name}` with defaults filled; `code_hash = sha256("dolya-script-v1\n" + canonical JSON of {base, params})` is what you mint as your script NFT |
+| GET | `/v1/scripts/hash/:hash` | a registered changed starter by its code hash |
+| GET | `/v1/scripts/:token/script` | what this engine can do with a script NFT: `kind` `starter`, `changed` (with `base`, `params`) or `research` (`runnable: false`) |
 | POST | `/v1/pilots/:id/referrer` | `{referrer}`: recorded once (a NEAR account, not yourself) |
 | GET, POST | `/v1/pilots/:id/tasks` | price tasks: `{asset, op: "<" \| ">", price, side: "buy" \| "sell", usd, text?}`; refused above the mandate's per-trade cap |
 | DELETE | `/v1/pilots/:id/tasks/:task` | cancel a task |
@@ -129,7 +132,7 @@ Set `SCHEDULER_ENABLED=false` to turn it off. On Vercel, Cron calls `GET /v1/cro
 
 ## Tests
 
-`npm test` runs 92 tests against in-process fakes of the Agent API, OutLayer, NEAR AI, Binance, the NEAR RPC (NFT views) and Hyperliquid testnet. Nothing goes over the network. The Hyperliquid signing test uses vectors produced by Hyperliquid's official Python SDK (`test/hl-vectors.json`). `npm run smoke` makes read-only calls to the real services.
+`npm test` runs 102 tests against in-process fakes of the Agent API, OutLayer, NEAR AI, Binance, the NEAR RPC (NFT views) and Hyperliquid testnet. Nothing goes over the network. The Hyperliquid signing test uses vectors produced by Hyperliquid's official Python SDK (`test/hl-vectors.json`). `npm run smoke` makes read-only calls to the real services.
 
 The tests use the committed WASM in `wasm/`, so they run on a fresh clone without Rust. `npm run build:wasm` rebuilds it from `../strategies` (pinned toolchain; the build is reproducible).
 

@@ -8,7 +8,6 @@ import { Area } from "@/components/Area";
 import { ScriptSheetBody, scriptImg, versionLabel } from "@/components/ScriptSheet";
 import { InviteCard } from "@/components/Referral";
 import { periodStats, scriptTitle, simulatedRecord, yoctoToNear } from "@/lib/chain";
-import { isCopyable } from "@/lib/useLeaderboard";
 import { NFT, explorerAccount } from "@/lib/config";
 import { useLeaderboard, type LeaderRow } from "@/lib/useLeaderboard";
 
@@ -16,7 +15,7 @@ const PERIODS: [string, number, string][] = [["7d", 7, "7 days"], ["30d", 30, "3
 const SORTS: [string, string][] = [["ratio", "Return / dip"], ["roi", "Return"], ["mdd", "Smallest dip"], ["copiers", "Copiers"]];
 
 export default function Leaderboard() {
-  const { rows, chain, chainError, loading, reload } = useLeaderboard();
+  const { rows, chain, startersHidden, chainError, loading, reload } = useLeaderboard();
   const [period, setPeriod] = useState("90d");
   const [unit, setUnit] = useState<"pct" | "usd">("pct");
   const [capital, setCapital] = useState(1000);
@@ -54,17 +53,18 @@ export default function Leaderboard() {
       <div className="flex flex-wrap items-end justify-between gap-6 pt-10">
         <div className="min-w-0">
           <h1 className="display text-[clamp(2.2rem,7vw,4rem)]"><Line>Leaderboard</Line></h1>
-          <p className="mt-3 max-w-[52ch] text-[18px] text-dim">Scripts to copy or buy. Every script is an NFT with a public weekly record; its code stays private. Copiers pay the holder a share of new profit.</p>
+          <p className="mt-3 max-w-[56ch] text-[18px] text-dim">Scripts people changed or wrote, to copy or buy. Everyone starts with the same 9 starter scripts; a changed one is minted as an NFT with a public weekly record. Copiers pay its holder a share of new profit.</p>
         </div>
         <Link href="/create" className="btn btn-yel !h-12 shrink-0 !text-[16px]">Write your own <span className="arrow">→</span></Link>
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2 text-[13px]">
         <a href={explorerAccount(NFT.contract)} target="_blank" rel="noreferrer" className={`rounded-full px-3 py-1.5 font-semibold ${chain ? "bg-[#e8f7ee] text-up" : "bg-card2 text-dim"}`}>
-          {chain ? `${chain.length} NFTs on ${NFT.contract} ✓` : loading ? `Reading ${NFT.network}…` : `${NFT.network} unreachable`}
+          {chain ? `${rows.length} community script${rows.length === 1 ? "" : "s"} on ${NFT.contract} ✓` : loading ? `Reading ${NFT.network}…` : `${NFT.network} unreachable`}
         </a>
-        <span className="rounded-full bg-cream px-3 py-1.5 font-semibold text-yel-deep">Returns: backtests (demo) until scripts trade live</span>
-        {chain?.some((c) => simulatedRecord(c.record)) && <span className="rounded-full bg-card2 px-3 py-1.5 font-semibold">On-chain checkpoints: simulated</span>}
+        {chain && startersHidden > 0 && <span className="rounded-full bg-card2 px-3 py-1.5 font-semibold">{startersHidden} starter and research NFTs not listed</span>}
+        <span className="rounded-full bg-cream px-3 py-1.5 font-semibold text-yel-deep">Returns: backtests until scripts trade live</span>
+        {rows.some((r) => r.chain && simulatedRecord(r.chain.record)) && <span className="rounded-full bg-card2 px-3 py-1.5 font-semibold">On-chain checkpoints: simulated</span>}
       </div>
       {chainError && <p className="mt-3 rounded-[14px] bg-[#fdecea] px-3 py-2 text-[14px] text-down">Couldn’t read the NFT contract ({chainError.slice(0, 80)}). Showing backtests only. <button className="font-semibold underline" onClick={reload}>Retry</button></p>}
 
@@ -116,7 +116,9 @@ export default function Leaderboard() {
                   <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[12px]">
                     <span className="truncate text-dim">{r.id}</span>
                     {r.chain && <span className="rounded-full bg-[#e8f7ee] px-2 py-0.5 font-semibold text-up">on-chain ✓</span>}
-                    {isCopyable(r.id) && <span className="rounded-full bg-yel px-2 py-0.5 font-semibold text-white">copy</span>}
+                    {r.kind === "changed" && <span className="rounded-full bg-yel px-2 py-0.5 font-semibold text-white">copy</span>}
+                    {r.kind === "changed" && r.script?.base_name && <span className="rounded-full bg-card2 px-2 py-0.5 font-semibold">changed {r.script.base_name}</span>}
+                    {r.kind === "research" && <span className="rounded-full bg-card2 px-2 py-0.5 font-semibold">research</span>}
                     {r.chain && r.chain.version > 1 && <span className="rounded-full bg-cream px-2 py-0.5 font-semibold text-yel-deep">{versionLabel(r.chain.version, r.chain.changedAt)}</span>}
                     {r.bt?.uses_perps && <span className="rounded-full bg-card2 px-2 py-0.5 font-semibold">perps</span>}
                   </span>
@@ -131,7 +133,19 @@ export default function Leaderboard() {
               <span className="hidden text-right text-[15px] font-semibold md:block">{r.chain?.price ? `${yoctoToNear(r.chain.price)} NEAR` : <span className="text-dim">—</span>}</span>
             </motion.button>
           ))}
-        {!list.length && <p className="card p-6 text-center text-[16px] text-dim">{loading ? "Loading scripts…" : "No script matches these filters."}</p>}
+        {!list.length && (loading || rows.length > 0 || chainError) && <p className="card p-6 text-center text-[16px] text-dim">{loading ? "Loading scripts…" : rows.length ? "No script matches these filters." : "Couldn’t read the scripts."}</p>}
+        {!loading && chain && !rows.length && (
+          <div className="card relative overflow-hidden p-6 sm:p-8">
+            <p className="text-[14px] text-dim">No community scripts yet</p>
+            <p className="display mt-2 max-w-[22ch] pr-24 text-[clamp(1.4rem,4vw,2rem)]">Be the first: change a starter and mint it</p>
+            <p className="mt-3 max-w-[54ch] text-[16px] leading-snug text-ink/80">Every user gets the same 9 starter scripts: constant mix, trend filter, volatility target, weekly buys, momentum, dip in an uptrend, breakout, buy the dip and stress rotation. Change one’s settings, backtest it and mint it as your NFT. It shows up here, others copy it, and you earn 5% of their new profit.</p>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link href="/create" className="btn btn-yel !h-12 !text-[16px]">Change a starter <span className="arrow">→</span></Link>
+              <Link href="/strategies" className="btn btn-gray !h-12 !text-[16px]">See the 9 starters</Link>
+            </div>
+            <img src="/3d/sparkle.png" alt="" className="absolute -right-2 -top-2 h-28 w-28 sm:h-36 sm:w-36" />
+          </div>
+        )}
       </div>
       <p className="mt-4 text-[13px] leading-snug text-dim">
         {periodLabel}. {unit === "usd" ? `Profit on $${capital.toLocaleString("en-US")} copied at the start. ` : ""}“Return / dip” divides the return by the worst drop, so steady scripts beat lucky ones.
@@ -142,9 +156,9 @@ export default function Leaderboard() {
         <InviteCard />
         <div className="card relative overflow-hidden p-6">
           <p className="text-[14px] text-dim">Your own script</p>
-          <p className="display mt-2 pr-24 text-[24px]">Describe it, AI writes it</p>
-          <p className="mt-2 max-w-[38ch] text-[15px] leading-snug text-ink/80">NEAR AI drafts the code from your idea. dolya checks it, and you mint it as an NFT. Copiers then pay you a share of their new profit.</p>
-          <Link href="/create" className="mt-4 inline-flex items-center gap-1 text-[15px] font-semibold text-yel">Write a script <span>→</span></Link>
+          <p className="display mt-2 pr-24 text-[24px]">Change a starter, mint it</p>
+          <p className="mt-2 max-w-[38ch] text-[15px] leading-snug text-ink/80">Take one of the 9 starter scripts, change its settings, backtest it and mint it as your NFT. Copiers then pay you a share of their new profit.</p>
+          <Link href="/create" className="mt-4 inline-flex items-center gap-1 text-[15px] font-semibold text-yel">Change a starter <span>→</span></Link>
           <img src="/3d/sparkle.png" alt="" className="absolute -bottom-3 -right-2 h-28 w-28" />
         </div>
       </div>

@@ -16,7 +16,7 @@ On 13 November it reported "clear". After merging, check from a fresh clone:
 
 ```bash
 git clone https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot /tmp/dolya && cd /tmp/dolya
-npm run setup && npm run tour     # ends with 9/9 steps passed
+npm run setup && npm run tour     # ends with 10/10 steps passed
 ```
 
 ## 2. Make the repository public (1 minute)

@@ -38,7 +38,7 @@ dolya lets you tell software how to handle your crypto in plain words, sign thos
 
 4. A main agent can run several scripts in one wallet and net their trades. A daily health check asks the owner "Pause / Keep running". One NEAR AI agent writes a weekly review and can only propose small, bounded parameter changes.
 
-What runs today: paper portfolios on live prices end to end (site and API); the strategy NFT contract on NEAR testnet (offers included) with a live leaderboard; backtests by the production WASM; 93 backend tests and 63 contract tests; every pilot is opened only with the key its creator received; and "npm run tour", which walks the whole path in about a minute with no keys. Live trading through the Agent API is implemented on the official SDK and tested against a fake API; it is off by default.
+What runs today, live at dolya.trade: paper portfolios on live prices end to end; nine starter scripts in one WASM engine that everyone gets, and changing a starter to mint your own script NFT, which copiers then run exactly; the strategy NFT contract on NEAR testnet (offers included); 102 backend tests and 63 contract tests; every pilot is opened only with the key its creator received; and "npm run tour", which walks the whole path in about a minute with no keys. Live trading through the Agent API is implemented on the official SDK and tested against a fake API; it is off by default.
 ```
 
 ## The X post
@@ -51,6 +51,8 @@ Built at NEAR HACKATHON: dolya 🍊
 Tell it how to handle your crypto in plain words. Sign once. Read a reason for every move.
 
 Strategies are NFTs: copy one, write your own, or buy one with the income it earns.
+
+Try it: dolya.trade
 
 @NEARProtocol #NEARHackathon
 ```

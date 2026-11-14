@@ -14,6 +14,7 @@ import { requiredBond, copiedCapitalUsd, MIN_BOND_USD } from "./copying.js";
 import { json, logEvent, parse } from "./db.js";
 import { ownerNearAccount } from "./fees.js";
 import type { Pilot } from "./pilots.js";
+import { scriptForToken } from "./scripts.js";
 import { parseStrategyParams, type StrategyId } from "./strategies.js";
 
 /** The script NFTs dolya's runner can execute: the four WASM strategies (see HANDOFF.md). */
@@ -94,12 +95,21 @@ function paramsFor(p: Pilot, strategy: StrategyId): Record<string, unknown> {
 }
 
 export async function follow(app: App, p: Pilot, tokenId: string) {
-  const strategy = strategyForToken(tokenId);
+  // A starter NFT runs its strategy with this pilot's assets; a changed starter runs its own params.
+  let strategy = strategyForToken(tokenId);
+  let scriptParams: Record<string, unknown> | null = null;
+  if (!strategy) {
+    const script = await scriptForToken(app, tokenId).catch(() => null);
+    if (script) {
+      strategy = script.base;
+      scriptParams = script.params;
+    }
+  }
   if (!strategy) {
     throw new SocialError(
       409,
       "not_runnable",
-      "This script runs only in the research engine. dolya's runner can copy the four WASM scripts: wasm-rebalance, wasm-trend, wasm-vol-target and wasm-dca.",
+      "This script runs only in the research engine. dolya's runner copies the starter scripts and starters changed in dolya (Write your own → Change a starter).",
     );
   }
   const gate = await tokenGate(app, p.owner, tokenId);
@@ -111,7 +121,7 @@ export async function follow(app: App, p: Pilot, tokenId: string) {
       "A live copy needs the agent's account to call follow on the strategy NFT contract, and that contract is on testnet while the Agent API is mainnet-only. Copy on a paper portfolio meanwhile.",
     );
   }
-  const params = paramsFor(p, strategy);
+  const params = scriptParams ?? paramsFor(p, strategy);
   const following = { token_id: tokenId, strategy_id: strategy, since: Date.now() };
   const pilot = await app.pilots.update(p.id, {
     strategy_id: strategy,

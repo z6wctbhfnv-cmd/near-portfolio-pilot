@@ -168,7 +168,7 @@ export default function Home() {
         <section id="copy" className="scroll-mt-24 pt-28">
           <p className="text-[15px] font-semibold text-yel">Strategy NFTs</p>
           <h2 className="display mt-3 text-[clamp(2rem,4.4vw,3.4rem)]"><Line>Copy the best.</Line><Line delay={0.08} className="max-sm:hidden"><span className="text-dim">Or be the one they copy.</span></Line><Line delay={0.08} className="sm:hidden"><span className="text-dim">Or be the one</span></Line><Line delay={0.16} className="sm:hidden"><span className="text-dim">they copy.</span></Line></h2>
-          <p className="mt-5 max-w-[46ch] text-[19px] leading-snug text-dim">Strategies on dolya are scripts with a public track record. Follow one, write your own with AI, or buy one together with the income it earns.</p>
+          <p className="mt-5 max-w-[46ch] text-[19px] leading-snug text-dim">Everyone starts with 9 starter scripts. Change one, mint your version as an NFT with a public track record, and others copy it. Or buy a script together with the income it earns.</p>
           <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {social.map((c, i) => (
               <Reveal key={c.t} delay={i * 0.06}>
@@ -184,7 +184,7 @@ export default function Home() {
           </div>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link href="/leaderboard" className="btn btn-yel">See the leaderboard <span className="arrow">→</span></Link>
-            <Link href="/create" className="btn btn-gray">Write your own</Link>
+            <Link href="/create" className="btn btn-gray">Change a starter</Link>
           </div>
         </section>
 

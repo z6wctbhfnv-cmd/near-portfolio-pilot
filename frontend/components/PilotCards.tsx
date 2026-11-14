@@ -3,11 +3,11 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import { api, type Fees, type Gate, type HealthCheck, type Pilot, type Swarm } from "@/lib/api";
+import { STARTER_NAMES, STARTERS, paramsForAssets } from "@/lib/starters";
 
 const usd = (n: number | null | undefined) => (n == null ? "—" : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const pct = (bps: number) => `${(bps / 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
 const day = (t: number) => new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-const STRAT: Record<string, string> = { rebalance: "Constant mix", trend: "Trend filter", vol_target: "Volatility target", dca: "Weekly buys" };
 
 function useLoad<T>(fn: () => Promise<T>, deps: unknown[]) {
   const [data, setData] = useState<T | null>(null);
@@ -57,7 +57,7 @@ export function CopyingCard({ pilot, onChanged }: { pilot: Pilot; onChanged: () 
   const g = gate.data;
   return (
     <Card eyebrow="Social trading" title={`Copying ${f.token_id}`} img="blocks">
-      <p className="mt-2 text-[15px] text-dim">Runs {STRAT[f.strategy_id] ?? f.strategy_id} on paper since {day(f.since)}.</p>
+      <p className="mt-2 text-[15px] text-dim">Runs {STARTER_NAMES[f.strategy_id] ?? f.strategy_id} on paper since {day(f.since)}.</p>
       {g && (
         <div className="mt-4 grid grid-cols-3 gap-2 text-center">
           <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">Holder</p><p className="mt-1 truncate text-[14px] font-semibold">{g.holder ?? "—"}</p></div>
@@ -172,12 +172,7 @@ export function HealthCard({ pilot, onChanged }: { pilot: Pilot; onChanged: () =
 
 /* ------------------------------------------------------------ swarm */
 
-const SCRIPTS = [
-  { id: "rebalance", name: "Constant mix" },
-  { id: "trend", name: "Trend filter" },
-  { id: "vol_target", name: "Volatility target" },
-  { id: "dca", name: "Weekly buys" },
-] as const;
+const SCRIPTS = STARTERS.map((x) => ({ id: x.id, name: x.name }));
 
 export function SwarmCard({ pilot, onChanged }: { pilot: Pilot; onChanged: () => void }) {
   const s = useLoad<Swarm>(() => api.swarm(pilot.id), [pilot.id, pilot.swarm ? JSON.stringify(pilot.swarm) : ""]);
@@ -185,10 +180,7 @@ export function SwarmCard({ pilot, onChanged }: { pilot: Pilot; onChanged: () =>
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const assets = pilot.mandate?.assets?.length ? pilot.mandate.assets : ["NEAR", "BTC", "ETH"];
-  const params = (id: string) => {
-    const w = Object.fromEntries(assets.map((a) => [a, Number((0.6 / assets.length).toFixed(4))]));
-    return id === "dca" ? { buy: Object.fromEntries(assets.map((a) => [a, 1 / assets.length])), amount_usd: 20, every_days: 7 } : { weights: w };
-  };
+  const params = (id: string) => paramsForAssets(id, assets);
   const save = async () => {
     setBusy(true); setErr(null);
     try { await api.setSwarm(pilot.id, { scripts: pick.map((id) => ({ key: id, id, params: params(id) })), allocation: "equal" }); await s.reload(); onChanged(); }

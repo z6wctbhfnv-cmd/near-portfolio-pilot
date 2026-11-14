@@ -219,6 +219,14 @@ CREATE TABLE IF NOT EXISTS perp_orders (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scripts (
+  code_hash TEXT PRIMARY KEY,
+  base TEXT NOT NULL,
+  params_json TEXT NOT NULL,
+  name TEXT,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   pilot_id TEXT NOT NULL,

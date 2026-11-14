@@ -33,7 +33,7 @@ describe("meta routes", () => {
     expect(JSON.stringify(cfg)).not.toContain("test-partner-key");
     expect(cfg.live_execution).toBe(false);
     const s = (await call("GET", "/v1/strategies")).body.data;
-    expect(s.map((x: { id: string }) => x.id)).toEqual(["rebalance", "trend", "vol_target", "dca"]);
+    expect(s.map((x: { id: string }) => x.id)).toEqual(["rebalance", "trend", "vol_target", "dca", "momentum", "mean_reversion", "breakout", "dip_buy", "stress_rotation"]);
     expect(s[0].params_schema.type).toBe("object");
     const u = (await call("GET", "/v1/universe")).body.data;
     expect(u.find((a: { symbol: string }) => a.symbol === "NEAR").price).toBe(4);

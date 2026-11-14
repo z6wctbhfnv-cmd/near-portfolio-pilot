@@ -35,7 +35,7 @@ export default function Strategies() {
       <div className="flex flex-wrap items-end justify-between gap-6 pt-10">
         <div className="min-w-0">
           <h1 className="display text-[clamp(2.4rem,7vw,4rem)]"><Line>Strategies</Line></h1>
-          <p className="mt-3 max-w-[46ch] text-[18px] text-dim">{live && cards.some((c) => c.source === "backtest") ? "Charts are backtests over the last 90 days on real prices, after swap costs." : "Each one keeps a public, verified record."} Whatever you pick still can’t break your rules.</p>
+          <p className="mt-3 max-w-[50ch] text-[18px] text-dim">The {cards.length} starter scripts everyone gets. Run one as it is, or change its settings in <Link href="/create" className="font-semibold text-yel">Write your own</Link> and mint your version. {live && cards.some((c) => c.source === "backtest") ? "Charts are backtests over the last 90 days on real prices, after swap costs." : ""} Whatever you pick still can’t break your rules.</p>
         </div>
         <div className="no-scrollbar -mx-4 flex max-w-[calc(100%+2rem)] gap-2 overflow-x-auto px-4 sm:mx-0 sm:px-0">
           {filters.map((f) => (
@@ -71,12 +71,12 @@ export default function Strategies() {
                 </div>
                 <div className="mt-4"><Area data={s.curve} id={s.id} /></div>
                 <div className="mt-4 grid grid-cols-3 gap-2">
-                  <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">90 days</p><Change v={s.ret} className="mt-1 block text-[18px] font-bold sm:text-[20px]" /></div>
-                  <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">Worst dip</p><p className="num mt-1 text-[18px] font-bold text-down sm:text-[20px]">{s.dd.toFixed(1)}%</p></div>
+                  <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">90 days</p>{s.source === "backtest" ? <Change v={s.ret} className="mt-1 block text-[18px] font-bold sm:text-[20px]" /> : <p className="mt-1 text-[18px] font-bold text-dim sm:text-[20px]">—</p>}</div>
+                  <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">Worst dip</p>{s.source === "backtest" ? <p className="num mt-1 text-[18px] font-bold text-down sm:text-[20px]">{s.dd.toFixed(1)}%</p> : <p className="mt-1 text-[18px] font-bold text-dim sm:text-[20px]">—</p>}</div>
                   <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">Just holding</p>{s.bench === null ? <p className="mt-1 text-[18px] font-bold text-dim sm:text-[20px]">—</p> : <Change v={s.bench} className="mt-1 block text-[18px] font-bold sm:text-[20px]" />}</div>
                 </div>
                 <div className="mt-5 flex items-center justify-between text-[15px] font-semibold">
-                  <span className="text-dim">{s.source === "backtest" ? "Backtest · 30 bps per swap" : "Demo data"}</span>
+                  <span className="text-dim">{s.source === "backtest" ? "Backtest · 30 bps per swap" : s.source === "loading" ? "Backtesting…" : "No backtest right now"}</span>
                   <span className="flex items-center gap-1 text-yel">Details <span className="transition-transform group-hover:translate-x-1">→</span></span>
                 </div>
               </motion.button>
@@ -94,7 +94,7 @@ export default function Strategies() {
               <img src={`/3d/${open.img}.png`} alt="" className="h-20 w-20" />
               <div className="min-w-0">
                 <h3 className="display text-[24px]">{open.name}</h3>
-                <p className="text-[14px] text-dim">{open.risk} risk · {open.source === "backtest" ? "90-day backtest" : "demo"}</p>
+                <p className="text-[14px] text-dim">{open.risk} risk · {open.source === "backtest" ? "90-day backtest" : open.source === "loading" ? "backtesting…" : "no backtest right now"}</p>
               </div>
             </div>
             <p className="mt-4 text-[17px] leading-snug">{open.tagline}</p>
@@ -104,6 +104,7 @@ export default function Strategies() {
             </motion.button>
             {note && <p className="mt-3 text-center text-[14px] text-down" role="alert">{note} {note.startsWith("Set your rules") && <Link href="/start" className="font-semibold text-yel underline">Set rules</Link>}</p>}
             <p className="mt-3 text-center text-[13px] text-dim">Starts on the next run, inside your rules.</p>
+            <Link href={`/create?base=${open.id}`} className="mt-4 block text-center text-[15px] font-semibold text-yel">Change its settings and mint your own →</Link>
           </div>
         )}
       </Sheet>

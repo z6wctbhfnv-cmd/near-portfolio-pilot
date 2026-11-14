@@ -64,7 +64,8 @@ export function ScriptSheetBody({ row, days, periodLabel, onChanged }: { row: Le
   const st = raw && raw.days > 0 ? raw : null;
   const change = c ? recordChange(c.record) : null;
   const bondOk = c ? c.bond.held >= c.bond.required : false;
-  const runnable = /^wasm-(rebalance|trend|vol-target|dca)@/.test(row.id);
+  // A starter or a changed starter runs in dolya's engine; custom code is research only for now.
+  const runnable = row.kind === "changed" || row.kind === "starter" || /^wasm-(rebalance|trend|vol-target|dca)@/.test(row.id);
   const [offers, setOffers] = useState<Offer[] | null | undefined>(undefined);
   const [bid, setBid] = useState("");
   const loadOffers = () => { offersOn(row.id).then(setOffers).catch(() => setOffers(undefined)); };
@@ -158,14 +159,14 @@ export function ScriptSheetBody({ row, days, periodLabel, onChanged }: { row: Le
         ) : <p className="mt-2 text-[14px] text-dim">The holder opened no settings for copiers.</p>}
         <motion.button whileTap={{ scale: 0.97 }} onClick={doCopy} disabled={copy.busy || !runnable}
           className={`btn mt-3 w-full ${runnable ? "btn-yel" : "btn-gray"} disabled:opacity-60`}>
-          {copy.busy ? "Copying…" : runnable ? `Copy into my paper portfolio · ${c ? pctFee(c.fee.bps) : "5%"} of new profit` : "Runs in the research engine only"}
+          {copy.busy ? "Copying…" : runnable ? `Copy into my paper portfolio · ${c ? pctFee(c.fee.bps) : "5%"} of new profit` : row.kind === null ? "Checking…" : "Runs in the research engine only"}
         </motion.button>
         {copy.text && <p role="status" className={`mt-2 rounded-[14px] px-3 py-2 text-[14px] ${copy.ok ? "bg-[#e8f7ee] text-up" : "bg-[#fdecea] text-down"}`}>{copy.text}</p>}
         <p className="mt-2 text-[14px] leading-snug text-dim">
           {c && !bondOk ? <>On chain, copying waits until the holder locks a ${c.bond.required.toFixed(0)} bond. </> : null}
           {runnable
             ? "A paper portfolio copies right away. A live copy needs the strategy NFT contract on mainnet, where your agent can sign follow."
-            : "dolya’s runner executes the four WASM scripts (rebalance, trend, volatility target, weekly buys); this one runs only in the research engine for now."}
+            : row.kind === null ? "Checking whether dolya’s engine can run this script…" : "dolya’s engine runs the 9 starter scripts and starters changed in dolya; this one is custom code, which runs only in the research engine for now."}
         </p>
       </Section>
 
