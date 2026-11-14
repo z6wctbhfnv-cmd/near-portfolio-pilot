@@ -21,6 +21,11 @@ pub const STRATEGIES: &[(&str, &str)] = &[
     ("dca", "Buy a fixed USD amount of chosen assets from the stablecoin every N days."),
     ("trend", "Hold each risk asset at full weight above its moving average, cut it below."),
     ("vol_target", "Scale the risk basket so its recent volatility matches a target."),
+    ("momentum", "Hold the strongest assets by recent return, only while that return is positive."),
+    ("mean_reversion", "Buy short pullbacks inside an uptrend; stay out of downtrends."),
+    ("breakout", "Hold an asset after it makes a new N-day high; leave after a new M-day low."),
+    ("dip_buy", "Hold more of an asset when it trades below its average, less when above."),
+    ("stress_rotation", "Hold the basket in calm markets; move to the stablecoin when the market is stressed."),
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -446,6 +451,229 @@ fn decide_dca(input: &Input, c: &Common, book: &Book) -> Result<Decision, String
     Ok(Decision { targets, force_trades: Some(trades), state, notes })
 }
 
+fn whole(params: &Value, key: &str, default: f64, lo: f64, hi: f64) -> Result<usize, String> {
+    let n = num(params, key, default)?;
+    if !(lo..=hi).contains(&n) || n.fract() != 0.0 {
+        return Err(format!("param `{key}` must be a whole number from {lo} to {hi}"));
+    }
+    Ok(n as usize)
+}
+
+fn ranged(params: &Value, key: &str, default: f64, lo: f64, hi: f64) -> Result<f64, String> {
+    let n = num(params, key, default)?;
+    if !(lo..=hi).contains(&n) {
+        return Err(format!("param `{key}` must be between {lo} and {hi}"));
+    }
+    Ok(n)
+}
+
+fn closes_of<'a>(input: &'a Input, sym: &str) -> &'a [f64] {
+    input.history.get(sym).map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// Momentum: rank the basket by return over `lookback_days`; hold the `top_k` best, each at an equal
+/// share of the basket's total weight, and only while its return is positive.
+fn decide_momentum(input: &Input, c: &Common) -> Result<Decision, String> {
+    let w = weights(&input.params, "weights")?;
+    let lookback = whole(&input.params, "lookback_days", 60.0, 5.0, 365.0)?;
+    let k = whole(&input.params, "top_k", 2.0, 1.0, 10.0)?;
+    let budget: f64 = w.values().sum();
+    let mut notes = Vec::new();
+    let mut ranked: Vec<(String, f64)> = Vec::new();
+    for sym in w.keys() {
+        let cl = closes_of(input, sym);
+        if cl.len() > lookback {
+            let r = cl[cl.len() - 1] / cl[cl.len() - 1 - lookback] - 1.0;
+            notes.push(format!("{sym}: {:+.1}% over {lookback} days", r * 100.0));
+            ranked.push((sym.clone(), r));
+        } else {
+            notes.push(format!("{sym}: fewer than {} closes, left out", lookback + 1));
+        }
+    }
+    // Highest return first; ties by symbol so the order is stable.
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    let mut risk = BTreeMap::new();
+    for (sym, r) in ranked.into_iter().take(k) {
+        if r > 0.0 {
+            risk.insert(sym, budget / k as f64);
+        }
+    }
+    if risk.is_empty() {
+        notes.push("no asset with a positive return in the top, all in the stablecoin".into());
+    }
+    Ok(Decision { targets: with_stable(risk, &c.stable), force_trades: None, state: input.state.clone(), notes })
+}
+
+/// Mean reversion: hold an asset at its weight when it is above its `trend_days` average (an
+/// uptrend) and fell more than `dip` over the last `dip_days`; otherwise stay out.
+fn decide_mean_reversion(input: &Input, c: &Common) -> Result<Decision, String> {
+    let w = weights(&input.params, "weights")?;
+    let trend = whole(&input.params, "trend_days", 100.0, 10.0, 400.0)?;
+    let dip_days = whole(&input.params, "dip_days", 3.0, 1.0, 30.0)?;
+    let dip = ranged(&input.params, "dip", 0.06, 0.01, 0.5)?;
+    let mut notes = Vec::new();
+    let mut risk = BTreeMap::new();
+    for (sym, weight) in w {
+        let cl = closes_of(input, &sym);
+        match (sma(cl, trend), cl.len() > dip_days) {
+            (Some(avg), true) => {
+                let last = cl[cl.len() - 1];
+                let r = last / cl[cl.len() - 1 - dip_days] - 1.0;
+                if last > avg && r < -dip {
+                    notes.push(format!("{sym}: {:+.1}% in {dip_days} days inside an uptrend, buy the dip", r * 100.0));
+                    risk.insert(sym, weight);
+                } else if last <= avg {
+                    notes.push(format!("{sym}: below its {trend}-day average, stay out"));
+                } else {
+                    notes.push(format!("{sym}: {:+.1}% in {dip_days} days, no dip to buy", r * 100.0));
+                }
+            }
+            _ => notes.push(format!("{sym}: fewer than {trend} closes, stay out")),
+        }
+    }
+    Ok(Decision { targets: with_stable(risk, &c.stable), force_trades: None, state: input.state.clone(), notes })
+}
+
+/// Breakout (Donchian): an asset is held from its latest close at a new `entry_days` high until a
+/// later close at a new `exit_days` low. Looks back over `3 * entry_days` closes.
+fn decide_breakout(input: &Input, c: &Common) -> Result<Decision, String> {
+    let w = weights(&input.params, "weights")?;
+    let entry = whole(&input.params, "entry_days", 55.0, 5.0, 300.0)?;
+    let exit = whole(&input.params, "exit_days", 20.0, 2.0, 200.0)?;
+    if exit >= entry {
+        return Err("param `exit_days` must be smaller than `entry_days`".into());
+    }
+    let mut notes = Vec::new();
+    let mut risk = BTreeMap::new();
+    for (sym, weight) in w {
+        let all = closes_of(input, &sym);
+        if all.len() < entry + 1 {
+            notes.push(format!("{sym}: fewer than {} closes, stay out", entry + 1));
+            continue;
+        }
+        let cl = &all[all.len().saturating_sub(entry * 3)..];
+        // Days since the latest close at a new high / low (0 = the last close).
+        let since = |n: usize, high: bool| -> Option<usize> {
+            (0..cl.len()).find(|&k| {
+                let i = cl.len() - 1 - k;
+                if i + 1 < n {
+                    return false;
+                }
+                let win = &cl[i + 1 - n..=i];
+                if high {
+                    cl[i] >= win.iter().cloned().fold(f64::MIN, f64::max)
+                } else {
+                    cl[i] <= win.iter().cloned().fold(f64::MAX, f64::min)
+                }
+            })
+        };
+        match (since(entry, true), since(exit, false)) {
+            (Some(h), low) if low.map_or(true, |l| h < l) => {
+                notes.push(format!("{sym}: new {entry}-day high {h} days ago, holding"));
+                risk.insert(sym, weight);
+            }
+            (_, Some(l)) => notes.push(format!("{sym}: new {exit}-day low {l} days ago, out")),
+            _ => notes.push(format!("{sym}: no breakout yet, out")),
+        }
+    }
+    Ok(Decision { targets: with_stable(risk, &c.stable), force_trades: None, state: input.state.clone(), notes })
+}
+
+/// Dip buying: each asset's weight is scaled by how far it trades from its `window`-day average,
+/// `1 - sensitivity * deviation`, kept between 0 and `max_scale`. If the total passes 100%, every
+/// asset is scaled down by the same factor.
+fn decide_dip_buy(input: &Input, c: &Common) -> Result<Decision, String> {
+    let w = weights(&input.params, "weights")?;
+    let window = whole(&input.params, "window_days", 30.0, 5.0, 200.0)?;
+    let sens = ranged(&input.params, "sensitivity", 4.0, 0.0, 20.0)?;
+    let max_scale = ranged(&input.params, "max_scale", 2.0, 1.0, 3.0)?;
+    let mut notes = Vec::new();
+    let mut risk = BTreeMap::new();
+    for (sym, weight) in w {
+        let cl = closes_of(input, &sym);
+        let scale = match (sma(cl, window), cl.last()) {
+            (Some(avg), Some(last)) => {
+                let dev = last / avg - 1.0;
+                let s = (1.0 - sens * dev).clamp(0.0, max_scale);
+                notes.push(format!("{sym}: {:+.1}% vs its {window}-day average, weight x{s:.2}", dev * 100.0));
+                s
+            }
+            _ => {
+                notes.push(format!("{sym}: fewer than {window} closes, base weight"));
+                1.0
+            }
+        };
+        risk.insert(sym, weight * scale);
+    }
+    let total: f64 = risk.values().sum();
+    if total > 1.0 {
+        for v in risk.values_mut() {
+            *v /= total;
+        }
+    }
+    Ok(Decision { targets: with_stable(risk, &c.stable), force_trades: None, state: input.state.clone(), notes })
+}
+
+/// Stress rotation: hold the basket while the `signal` asset is calm; move everything to the
+/// stablecoin when it trades below its `trend_days` average or its `vol_days` volatility is in the
+/// top quarter of the past `year_days`.
+fn decide_stress_rotation(input: &Input, c: &Common) -> Result<Decision, String> {
+    let w = weights(&input.params, "weights")?;
+    let signal = text(&input.params, "signal", "BTC")?;
+    let trend = whole(&input.params, "trend_days", 50.0, 10.0, 300.0)?;
+    let vol_days = whole(&input.params, "vol_days", 30.0, 5.0, 120.0)?;
+    let year = whole(&input.params, "year_days", 365.0, 60.0, 730.0)?;
+    if !w.contains_key(&signal) {
+        return Err(format!("param `signal` must be one of the basket's assets, got `{signal}`"));
+    }
+    let cl = closes_of(input, &signal);
+    let mut notes = Vec::new();
+    let below = match (sma(cl, trend), cl.last()) {
+        (Some(avg), Some(last)) => *last < avg,
+        _ => {
+            notes.push(format!("{signal}: fewer than {trend} closes, treated as stressed"));
+            true
+        }
+    };
+    // Rolling volatility of daily returns, one value per day over the past year.
+    let rets: Vec<f64> = cl.windows(2).map(|p| p[1] / p[0] - 1.0).collect();
+    let vols: Vec<f64> = if rets.len() >= vol_days {
+        (vol_days..=rets.len())
+            .map(|end| {
+                let s = &rets[end - vol_days..end];
+                let m = s.iter().sum::<f64>() / s.len() as f64;
+                (s.iter().map(|r| (r - m).powi(2)).sum::<f64>() / (s.len() - 1).max(1) as f64).sqrt()
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+    let hist = &vols[vols.len().saturating_sub(year)..];
+    let high_vol = if hist.len() > 60 {
+        let mut sorted = hist.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let q = sorted[((sorted.len() - 1) as f64 * 0.75).round() as usize];
+        *hist.last().unwrap() > q
+    } else {
+        false
+    };
+    let stressed = below || high_vol;
+    if below {
+        notes.push(format!("{signal}: below its {trend}-day average, stressed"));
+    }
+    if high_vol {
+        notes.push(format!("{signal}: {vol_days}-day volatility in the top quarter of the past year, stressed"));
+    }
+    let risk = if stressed {
+        notes.push("stress: basket moved to the stablecoin".into());
+        BTreeMap::new()
+    } else {
+        notes.push(format!("{signal}: calm, holding the basket"));
+        w
+    };
+    Ok(Decision { targets: with_stable(risk, &c.stable), force_trades: None, state: input.state.clone(), notes })
+}
+
 fn managed_symbols(input: &Input, c: &Common) -> Result<Vec<String>, String> {
     let key = if input.strategy == "dca" { "buy" } else { "weights" };
     let mut syms: Vec<String> = weights(&input.params, key)?.into_keys().collect();
@@ -471,6 +699,11 @@ pub fn run(raw: &[u8]) -> Result<Output, (String, String)> {
         "trend" => decide_trend(&input, &c),
         "vol_target" => decide_vol_target(&input, &c),
         "dca" => decide_dca(&input, &c, &book),
+        "momentum" => decide_momentum(&input, &c),
+        "mean_reversion" => decide_mean_reversion(&input, &c),
+        "breakout" => decide_breakout(&input, &c),
+        "dip_buy" => decide_dip_buy(&input, &c),
+        "stress_rotation" => decide_stress_rotation(&input, &c),
         _ => unreachable!(),
     }
     .map_err(fail)?;
@@ -689,5 +922,97 @@ mod tests {
             "portfolio": port(1.0, 1.0)
         })));
         assert!(r.is_err());
+    }
+
+    fn two_assets() -> Value {
+        json!([
+            { "symbol": "BTC", "units": 0.0, "price": 100.0 },
+            { "symbol": "ETH", "units": 0.0, "price": 100.0 },
+            { "symbol": "USDC", "units": 1000.0, "price": 1.0 }
+        ])
+    }
+
+    fn line(start: f64, step: f64, n: usize) -> Vec<f64> {
+        (0..n).map(|i| start + step * i as f64).collect()
+    }
+
+    fn targets(strategy: &str, params: Value, history: Value) -> BTreeMap<String, f64> {
+        run(&input(json!({ "strategy": strategy, "now_ms": 0, "params": params, "portfolio": two_assets(), "history": history })))
+            .unwrap()
+            .target_weights
+    }
+
+    #[test]
+    fn momentum_holds_only_rising_leaders() {
+        let t = targets(
+            "momentum",
+            json!({ "weights": { "BTC": 0.4, "ETH": 0.4 }, "lookback_days": 10, "top_k": 2 }),
+            json!({ "BTC": line(100.0, 1.0, 20), "ETH": line(100.0, -1.0, 20) }),
+        );
+        assert_eq!(t.get("BTC"), Some(&0.4));
+        assert_eq!(t.get("ETH"), None);
+        assert_eq!(t.get("USDC"), Some(&0.6));
+    }
+
+    #[test]
+    fn mean_reversion_buys_a_dip_in_an_uptrend_only() {
+        let mut up = line(50.0, 1.0, 120);
+        let n = up.len();
+        up[n - 1] = up[n - 4] * 0.9; // -10% in 3 days, still above the 100-day average
+        let down = line(200.0, -1.0, 120);
+        let t = targets(
+            "mean_reversion",
+            json!({ "weights": { "BTC": 0.5, "ETH": 0.5 } }),
+            json!({ "BTC": up, "ETH": down }),
+        );
+        assert_eq!(t.get("BTC"), Some(&0.5));
+        assert_eq!(t.get("ETH"), None);
+    }
+
+    #[test]
+    fn breakout_holds_after_a_new_high_and_leaves_after_a_new_low() {
+        let rising = line(100.0, 1.0, 80);
+        let mut fell = line(100.0, 1.0, 70);
+        fell.extend(line(150.0, -5.0, 10)); // new 20-day low after the last high
+        let t = targets(
+            "breakout",
+            json!({ "weights": { "BTC": 0.5, "ETH": 0.5 }, "entry_days": 55, "exit_days": 20 }),
+            json!({ "BTC": rising, "ETH": fell }),
+        );
+        assert_eq!(t.get("BTC"), Some(&0.5));
+        assert_eq!(t.get("ETH"), None);
+    }
+
+    #[test]
+    fn dip_buy_leans_into_assets_below_their_average() {
+        let mut below = vec![100.0; 30];
+        below.push(90.0);
+        let mut above = vec![100.0; 30];
+        above.push(110.0);
+        let t = targets(
+            "dip_buy",
+            json!({ "weights": { "BTC": 0.3, "ETH": 0.3 }, "window_days": 30 }),
+            json!({ "BTC": below, "ETH": above }),
+        );
+        assert!(t["BTC"] > 0.3 && t["ETH"] < 0.3, "{t:?}");
+    }
+
+    #[test]
+    fn stress_rotation_goes_to_the_stablecoin_under_its_average() {
+        let calm = targets(
+            "stress_rotation",
+            json!({ "weights": { "BTC": 0.5, "ETH": 0.3 }, "trend_days": 20 }),
+            json!({ "BTC": line(100.0, 1.0, 60), "ETH": line(100.0, 1.0, 60) }),
+        );
+        assert_eq!(calm.get("BTC"), Some(&0.5));
+        let stressed = targets(
+            "stress_rotation",
+            json!({ "weights": { "BTC": 0.5, "ETH": 0.3 }, "trend_days": 20 }),
+            json!({ "BTC": line(200.0, -1.0, 60), "ETH": line(100.0, 1.0, 60) }),
+        );
+        assert_eq!(stressed.get("USDC"), Some(&1.0));
+        let bad = run(&input(json!({ "strategy": "stress_rotation", "now_ms": 0,
+            "params": { "weights": { "ETH": 0.5 } }, "portfolio": two_assets() })));
+        assert!(bad.is_err(), "signal must be in the basket");
     }
 }

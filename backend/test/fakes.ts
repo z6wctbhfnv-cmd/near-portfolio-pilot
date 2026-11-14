@@ -280,6 +280,7 @@ export class FakeNftChain {
   copyFee: Record<string, number> = {};
   bonds: Record<string, [string, string]> = {}; // token -> [held, required], USD with 6 decimals
   payments: Record<string, string> = {}; // reference -> credited
+  infos: Record<string, { strategy_id: string; code_hash: string; author: string }> = {}; // token -> strategy_info
   failViews = false;
   calls: string[] = [];
   handle(init: RequestInit): Response {
@@ -301,6 +302,8 @@ export class FakeNftChain {
         return answer(this.bonds[args.token_id!] ?? ["0", "100000000"]);
       case "fee_payment":
         return answer(this.payments[args.reference!] ?? null);
+      case "strategy_info":
+        return answer(this.infos[args.token_id!] ?? null);
       case "record":
         return answer([]);
       default:

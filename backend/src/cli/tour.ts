@@ -114,6 +114,18 @@ step("Copy a strategy NFT: your agent follows it inside your own rules", "GET /v
   see(`refused      donchian-breakout@v1: ${(bad.json() as Json).error.message}`);
 });
 
+step("Change a starter script: everyone starts with nine, a changed one becomes your NFT", "GET /v1/strategies, POST /v1/scripts, POST /v1/strategies/:id/backtest", async () => {
+  const starters = (await call("GET", "/v1/strategies")).data as Json[];
+  see(`starters     ${starters.map((s) => s.name).join(", ")}`);
+  check(starters.length === 9, "nine starter scripts, all run by the WASM engine");
+  const params = { weights: { BTC: 0.3, ETH: 0.3, NEAR: 0.2 }, lookback_days: 90, top_k: 2 };
+  const script = await call("POST", "/v1/scripts", { base: "momentum", params, name: "Slow momentum" });
+  see(`changed      Momentum with a 90-day lookback → code_hash ${String(script.code_hash).slice(0, 16)}… (what you mint as your NFT)`);
+  const r = await call("POST", "/v1/strategies/momentum/backtest", { params: script.params, days: 365 });
+  see(`backtest     return ${pct(r.metrics.total_return)}, max drawdown ${pct(r.metrics.max_drawdown)} vs buy & hold ${pct(r.benchmark_hold.total_return)}`);
+  check(/^[0-9a-f]{64}$/.test(script.code_hash) && r.activity.strategy_errors === 0, "a hash for the changed starter and a clean one-year backtest");
+});
+
 step("Daily health check asks the owner: Pause or Keep running", "POST /v1/pilots/:id/health/check", async () => {
   const h = await call("POST", `/v1/pilots/${pilotId}/health/check`, {});
   check(Array.isArray(h.findings) && h.findings.length > 0, "the check produced findings");

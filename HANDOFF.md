@@ -4,12 +4,12 @@
 
 Branch `dolya-full` joins the backend gap work and the dolya site, puts every backend feature on the site, and makes a fresh clone runnable with no setup. Nothing in it moved real money or wrote on chain.
 
-**Run it:** `npm run setup`, then `npm run tour` (9 steps, exit code 0), `npm test`, `npm run dev`. The README has the "do X, see Y" tables.
+**Run it:** `npm run setup`, then `npm run tour` (10 steps, exit code 0), `npm test`, `npm run dev`. The README has the "do X, see Y" tables.
 
 | Checked | Result |
 |---|---|
 | Backend | `npm test`: 92 tests against fakes (Agent API, NEAR RPC, OutLayer, NEAR AI, Hyperliquid testnet, market data) |
-| Judge tour | `npm run tour`: 9/9 steps on live public prices and testnet reads, about a minute |
+| Judge tour | `npm run tour`: 10/10 steps on live public prices and testnet reads, about a minute |
 | Fresh clone from GitHub | `npm run setup`, the tour, the tests and `npm run dev` (all six pages answer, a paper run fills) on Node 24 and, from scratch, on Node 22 |
 | NFT contract | `cargo test`: 63 tests (9 new for offers); `cargo near build non-reproducible-wasm --no-abi` builds |
 | Strategies | `cargo test`: 10 tests |

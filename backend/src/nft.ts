@@ -100,6 +100,11 @@ export class NftPublisher {
     throw new Error(`view ${method} failed: ${(last as Error)?.message ?? "no answer"}`);
   }
 
+  /** The script an NFT is bound to (its code hash and author), or null for an unknown token. */
+  async strategyInfo(tokenId: string): Promise<StrategyInfo | null> {
+    return this.view<StrategyInfo | null>("strategy_info", { token_id: tokenId });
+  }
+
   /** Which NFT holds this script, cached for 10 minutes (mints are rare). */
   async tokenByCodeHash(codeHash: string): Promise<string | null> {
     const hit = this.tokenCache.get(codeHash);

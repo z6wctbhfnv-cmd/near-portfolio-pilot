@@ -40,6 +40,44 @@ export const STRATEGY_SCHEMAS = {
     amount_usd: z.number().min(1).max(100_000).default(20),
     every_days: z.number().int().min(1).max(90).default(7),
   }),
+  momentum: z.object({
+    ...common,
+    weights: weightMap,
+    lookback_days: z.number().int().min(5).max(365).default(60),
+    top_k: z.number().int().min(1).max(10).default(2),
+  }),
+  mean_reversion: z.object({
+    ...common,
+    weights: weightMap,
+    trend_days: z.number().int().min(10).max(400).default(100),
+    dip_days: z.number().int().min(1).max(30).default(3),
+    dip: z.number().min(0.01).max(0.5).default(0.06),
+  }),
+  breakout: z
+    .object({
+      ...common,
+      weights: weightMap,
+      entry_days: z.number().int().min(5).max(300).default(55),
+      exit_days: z.number().int().min(2).max(200).default(20),
+    })
+    .refine((p) => p.exit_days < p.entry_days, "exit_days must be smaller than entry_days"),
+  dip_buy: z.object({
+    ...common,
+    weights: weightMap,
+    window_days: z.number().int().min(5).max(200).default(30),
+    sensitivity: z.number().min(0).max(20).default(4),
+    max_scale: z.number().min(1).max(3).default(2),
+  }),
+  stress_rotation: z
+    .object({
+      ...common,
+      weights: weightMap,
+      signal: z.string().regex(/^[A-Z0-9]{2,10}$/).default("BTC"),
+      trend_days: z.number().int().min(10).max(300).default(50),
+      vol_days: z.number().int().min(5).max(120).default(30),
+      year_days: z.number().int().min(60).max(730).default(365),
+    })
+    .refine((p) => p.signal in p.weights, "signal must be one of the basket's assets"),
 } as const;
 
 export type StrategyId = keyof typeof STRATEGY_SCHEMAS;
@@ -66,6 +104,31 @@ export const STRATEGY_INFO: Record<StrategyId, { name: string; description: stri
     description: "Buy a fixed USD amount of the chosen assets from the stablecoin every N days.",
     history_days: () => 0,
   },
+  momentum: {
+    name: "Momentum",
+    description: "Hold the strongest assets by recent return, only while that return is positive; the rest sits in the stablecoin.",
+    history_days: (p) => Number(p.lookback_days ?? 60) + 1,
+  },
+  mean_reversion: {
+    name: "Dip in an uptrend",
+    description: "Buy short pullbacks of assets that trade above their long average; stay out of downtrends.",
+    history_days: (p) => Math.max(Number(p.trend_days ?? 100), Number(p.dip_days ?? 3) + 1) + 1,
+  },
+  breakout: {
+    name: "Breakout",
+    description: "Hold an asset after it closes at a new N-day high; leave after it closes at a new M-day low.",
+    history_days: (p) => Number(p.entry_days ?? 55) * 3 + 1,
+  },
+  dip_buy: {
+    name: "Buy the dip",
+    description: "Hold more of an asset when it trades below its average and less when above.",
+    history_days: (p) => Number(p.window_days ?? 30) + 1,
+  },
+  stress_rotation: {
+    name: "Stress rotation",
+    description: "Hold the basket while the market is calm; move to the stablecoin when it is under its average or unusually volatile.",
+    history_days: (p) => Number(p.year_days ?? 365) + Number(p.vol_days ?? 30) + 2,
+  },
 };
 
 /**
@@ -77,6 +140,11 @@ export const REVIEW_TUNABLE: Record<StrategyId, string[]> = {
   trend: ["band", "sma_days", "off_fraction", "max_turnover"],
   vol_target: ["band", "target_vol", "lookback", "max_scale", "max_turnover"],
   dca: ["amount_usd", "every_days"],
+  momentum: ["band", "lookback_days", "max_turnover"],
+  mean_reversion: ["band", "trend_days", "dip", "max_turnover"],
+  breakout: ["band", "entry_days", "exit_days", "max_turnover"],
+  dip_buy: ["band", "window_days", "sensitivity", "max_turnover"],
+  stress_rotation: ["band", "trend_days", "vol_days", "max_turnover"],
 };
 export const MAX_REVIEW_STEP = 0.25;
 

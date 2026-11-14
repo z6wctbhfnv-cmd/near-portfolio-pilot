@@ -2,14 +2,14 @@
 
 **Your moves, explained. Copy, create, earn.** Built at NEAR HACKATHON, November 2026.
 
-**Live demo: [dolya.trade](https://dolya.trade).** No wallet or keys needed: open Portfolio → "Start with $1,000 of paper money", then Leaderboard → a strategy NFT → "Copy". It trades paper money on live prices and reads strategy NFTs from NEAR testnet. On the live site, scheduled work (price tasks, weekly fees) runs once a day; run it locally (below) to see a price task fire within a minute.
+**Live demo: [dolya.trade](https://dolya.trade).** No wallet or keys needed: open Portfolio → "Start with $1,000 of paper money", then Strategies to switch between the nine starter scripts, and Write your own to change one. It trades paper money on live prices and reads strategy NFTs from NEAR testnet. On the live site, scheduled work (price tasks, weekly fees) runs once a day; run it locally (below) to see a price task fire within a minute.
 
 dolya ("доля": a share, a slice) lets you tell software how to handle your crypto in plain words, sign those rules once, and then read a reason for every move it makes. Strategies are NFTs with a public record: you can copy one, write your own, or buy one together with the income it earns.
 
 1. **Say it.** "Careful: NEAR, BTC and ETH. Max $300 a day, $50 per trade." becomes exact limits.
 2. **Sign it.** The limits become a NEAR Intents Agent API policy that the owner signs once. It allows swaps only and has no destination, so funds cannot leave the wallet, whatever the software or an AI does.
-3. **Read it.** Deterministic strategy scripts trade inside those limits. Every move, and every skipped one, comes with a reason.
-4. **Copy it.** Every strategy is an NFT on NEAR. Copiers pay its holder 5% of their new profit, only above their previous peak. The holder keeps a bond. The NFT can be sold, or bought with an offer, and the income goes with it.
+3. **Read it.** Deterministic strategy scripts trade inside those limits. Everyone starts with nine working starter scripts. Every move, and every skipped one, comes with a reason.
+4. **Change it, copy it.** Change a starter (its parameters) and mint the result as your own script NFT; the leaderboard shows only such changed and new scripts. Copiers pay the NFT's holder 5% of their new profit, only above their previous peak. The holder keeps a bond. The NFT can be sold, or bought with an offer, and the income goes with it.
 
 The project was first named NEAR Portfolio Pilot; code and the contract still use "pilot" in names.
 
@@ -21,7 +21,7 @@ You need **Node 22 or 24** (`nvm install 24 && nvm use 24`; both are tested) and
 git clone https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot && cd near-portfolio-pilot
 npm run setup     # installs backend/ and frontend/ dependencies
 npm run tour      # walks the whole product path in about a minute; exit code 0 = every step did what it says
-npm test          # 93 backend tests against in-process fakes, no network
+npm test          # 102 backend tests against in-process fakes, no network
 npm run dev       # backend on http://127.0.0.1:8787, site on http://localhost:3000
 ```
 
@@ -35,13 +35,14 @@ The tour boots the real backend in one process with a throwaway database and cal
 | 2 | Backtests the chosen strategy on one year of real daily prices | Return and max drawdown next to buy-and-hold |
 | 3 | Creates a paper portfolio and runs it | The strategy wanted about $300; the rules cap a trade at $50, so $150 went through: `your rules won` |
 | 4 | Reads `wasm-trend@v1` from the testnet contract and copies it | Holder and bond from chain, the pilot now runs the copied script, fee terms 5% + 0.25%; a research-only script is refused with a reason |
-| 5 | Runs the daily health check | Findings, and the owner's question when something needs a decision |
-| 6 | Adds the task "if BTC below $X buy $25" and runs one scheduler tick | The task fired once at the live price; another task keeps waiting |
-| 7 | Puts two scripts in one wallet (a swarm) and runs | Each script agent's sleeve and what the main agent netted |
-| 8 | Runs the weekly review | A summary and bounded proposals (NEAR AI with a key, a rule-based reviewer without) |
-| 9 | Pauses the pilot and ticks the scheduler | 0 new runs while paused |
+| 5 | Lists the nine starter scripts, changes one (Momentum with a 90-day lookback), registers it and backtests it | Nine names; the changed script's `code_hash`, which is what you mint as your NFT; a one-year backtest |
+| 6 | Runs the daily health check | Findings, and the owner's question when something needs a decision |
+| 7 | Adds the task "if BTC below $X buy $25" and runs one scheduler tick | The task fired once at the live price; another task keeps waiting |
+| 8 | Puts two scripts in one wallet (a swarm) and runs | Each script agent's sleeve and what the main agent netted |
+| 9 | Runs the weekly review | A summary and bounded proposals (NEAR AI with a key, a rule-based reviewer without) |
+| 10 | Pauses the pilot and ticks the scheduler | 0 new runs while paused |
 
-It ends with `9/9 steps passed`.
+It ends with `10/10 steps passed`.
 
 The tour needs internet: it reads live prices (NEAR Intents token list, with public spot prices as fallback), daily price history and the testnet contract. Without network, `npm test` exercises the same paths against in-process fakes.
 
@@ -53,13 +54,14 @@ Run `npm run dev` and open http://localhost:3000.
 |---|---|
 | **Portfolio** → "Start with $1,000 of paper money" | A paper portfolio near $999 after its first run, and "Moves, explained" with the reason for the first swaps |
 | **Rules** → type a sentence → Continue | "Here's what we understood": daily limit, largest trade, assets, "Withdrawals: your wallet only"; presets Careful / Balanced / Bold; a microphone for voice input |
-| **Leaderboard** | Strategy NFTs read live from [`pilot-nft2-14805.testnet`](https://testnet.nearblocks.io/address/pilot-nft2-14805.testnet): holder, copiers, copy fee, bond, sale price. Rows marked **copy** run in dolya's own engine and show two-year backtests from it |
-| Open "Trend filter" → "Copy into my paper portfolio" | The copy starts on paper; Portfolio now shows "Copying wasm-trend@v1" with the holder's bond from chain, and a Fees card |
+| **Strategies** | The nine starter scripts everyone gets: Constant mix, Trend filter, Volatility target, Weekly buys, Momentum, Dip in an uptrend, Breakout, Buy the dip, Stress rotation. Each runs in dolya's WASM engine; pick one for your portfolio |
+| **Write your own** → Change a starter → edit its parameters → Check | The changed script's `code_hash` from the backend, a one-year backtest next to buy-and-hold, and "Mint on testnet" (signed in a testnet wallet) |
+| **Leaderboard** | Only scripts users changed or wrote, read live from [`pilot-nft2-14805.testnet`](https://testnet.nearblocks.io/address/pilot-nft2-14805.testnet); the team's starter NFTs are hidden. Changed starters are marked **copy**: "Copy into my paper portfolio" runs that exact script, and Portfolio shows "Copying …" and a Fees card. Until someone mints one, the page says how to make the first |
 | Tasks card → `if BTC below 100000 buy $25` → Start watching | Within a minute the task shows "done" with the price it fired at |
 | Agent swarm card → pick two scripts → run | One wallet, two script agents, their sleeves |
 | Daily health check → Check now | Findings; a "Pause / Keep running" question when something is off |
 | Freeze | A red banner; nothing trades until you resume |
-| **Leaderboard** → "Write your own" | Idea → NEAR AI drafts a script → checks → mint as an NFT (needs `NEARAI_API_KEY`; without it the page says so) |
+| **Write your own** → Write from scratch | Idea → NEAR AI drafts a Python research script → checks → mint as an NFT (needs `NEARAI_API_KEY`; without it the page says so). dolya's engine does not run custom code yet, so such scripts are research only |
 
 Buying, listing and offers on the leaderboard are real testnet transactions signed in a testnet wallet; nothing is sent without a confirmation sheet that shows the exact call.
 
@@ -67,7 +69,8 @@ Buying, listing and offers on the leaderboard are real testnet transactions sign
 
 | Piece | State today | Checked by |
 |---|---|---|
-| Strategies: 4 deterministic scripts in Rust, compiled to one WASI module | Real. The same binary runs backtests, paper runs, live runs and is built for OutLayer's TEE | 10 Rust tests; a test shows byte-identical output under two WASI runtimes |
+| Strategies: 9 deterministic starter scripts in Rust, compiled to one WASI module | Real. The same binary runs backtests, paper runs, live runs and is built for OutLayer's TEE | 15 Rust tests; a test shows byte-identical output under two WASI runtimes |
+| Changed starters (a starter with your own parameters) | Real. The backend keeps base + parameters; the NFT stores `sha256("dolya-script-v1\n" + canonical JSON)`; a copier's pilot runs exactly that script | Tests, tour step 5 |
 | Rules → mandate → policy (swaps only, no destination, USD budget, per-asset caps) | Real | Tests, tour step 1 |
 | Paper portfolios on live prices, with the mandate's caps enforced | Real | Tests, tour, the site |
 | Prices | Agent API token list; falls back to the production host and then to spot tickers, so the demo survives the demo host going away | Test |
