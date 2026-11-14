@@ -2,22 +2,16 @@
 import { useEffect, useState } from "react";
 import { api, currentPilotId, type Backtest } from "./api";
 import { strategies as demo } from "./demo";
+import { STARTERS, STARTER_NAMES, paramsForAssets } from "./starters";
 
 export type StrategyCard = {
   id: string; name: string; tagline: string; img: string; risk: "Low" | "Medium";
-  ret: number; dd: number; bench: number | null; curve: number[]; params: Record<string, unknown>; source: "backtest" | "demo";
+  ret: number; dd: number; bench: number | null; curve: number[]; params: Record<string, unknown>; source: "backtest" | "demo" | "none";
 };
 
-const WEIGHTS = { NEAR: 0.2, BTC: 0.2, ETH: 0.2 };
-/** What each backend strategy looks like in the UI, with the params we backtest it on. */
-const META: Record<string, { img: string; risk: "Low" | "Medium"; tagline: string; params: Record<string, unknown> }> = {
-  rebalance: { img: "balance", risk: "Low", tagline: "Holds your mix at target. Trades only when the drift is worth the fee.", params: { weights: WEIGHTS } },
-  trend: { img: "arrow", risk: "Medium", tagline: "Rides assets that trade above their average and steps out when they fall below.", params: { weights: WEIGHTS, sma_days: 50 } },
-  vol_target: { img: "blocks", risk: "Medium", tagline: "Takes more risk when markets are calm, less when they get wild.", params: { weights: { NEAR: 0.3, BTC: 0.3, ETH: 0.3 }, target_vol: 0.5 } },
-  dca: { img: "calendar", risk: "Low", tagline: "Buys a fixed amount on a schedule. Boring on purpose.", params: { buy: { NEAR: 0.5, BTC: 0.5 }, amount_usd: 20, every_days: 7 } },
-};
-
-const DEMO_OF: Record<string, string> = { rebalance: "calm", trend: "trend", vol_target: "stable", dca: "dca" };
+/** What each starter looks like in the UI, with the params we backtest it on (lib/starters.ts). */
+const META: Record<string, { img: string; risk: "Low" | "Medium"; tagline: string; params: Record<string, unknown> }> =
+  Object.fromEntries(STARTERS.map((x) => [x.id, { img: x.img, risk: x.risk, tagline: x.tagline, params: x.params }]));
 
 const demoCards: StrategyCard[] = demo.map((s) => ({
   id: s.id, name: s.name, tagline: s.tagline, img: { calm: "balance", dca: "calendar", trend: "arrow", stable: "blocks" }[s.id] ?? "sparkle",
@@ -54,10 +48,10 @@ export function useStrategies() {
           try {
             const r = readBacktest(await api.backtest(s.id, meta.params, 90));
             if (r.curve.length < 2) throw new Error("empty backtest");
-            return { id: s.id, name: s.name, tagline: meta.tagline, img: meta.img, risk: meta.risk, ...r, params: meta.params, source: "backtest" };
+            return { id: s.id, name: STARTER_NAMES[s.id] ?? s.name, tagline: meta.tagline, img: meta.img, risk: meta.risk, ...r, params: meta.params, source: "backtest" };
           } catch {
-            const d = demo.find((x) => x.id === DEMO_OF[s.id]) ?? demo[0];
-            return { id: s.id, name: s.name, tagline: meta.tagline, img: meta.img, risk: meta.risk, ret: d.ret, dd: d.dd, bench: null, curve: d.spark, params: meta.params, source: "demo" };
+            // No backtest right now: show the card without numbers rather than invent any.
+            return { id: s.id, name: STARTER_NAMES[s.id] ?? s.name, tagline: meta.tagline, img: meta.img, risk: meta.risk, ret: 0, dd: 0, bench: null, curve: [1, 1], params: meta.params, source: "none" };
           }
         }));
         if (!alive) return;
@@ -73,7 +67,13 @@ export function useStrategies() {
     const pid = currentPilotId();
     if (!pid || !live) return "no_pilot" as const;
     const p = await api.pilot(pid);
-    const params = card.id === "dca" ? card.params : { ...card.params, weights: p.strategy.params.weights ?? card.params.weights };
+    // Keep the pilot's own assets: its weights when it has them, else an even split of its mandate assets.
+    const own = p.strategy.params.weights;
+    let params: Record<string, unknown>;
+    if (card.id !== "dca" && own && Object.keys(own).length) {
+      params = { ...card.params, weights: own };
+      if (card.id === "stress_rotation") params.signal = "BTC" in own ? "BTC" : Object.keys(own)[0];
+    } else params = paramsForAssets(card.id, p.mandate?.assets ?? []);
     await api.setStrategy(pid, { id: card.id, params });
     setActiveId(card.id);
     return "ok" as const;

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, currentPilotId, setCurrentPilotId, type Pilot, type Portfolio, type Review } from "./api";
 import type { Move } from "./demo";
+import { STARTER_NAMES } from "@/lib/starters";
 
 export type Holding = { sym: string; name: string; amount: string; usd: number; change: number; target: number };
 export type PilotView = {
@@ -16,7 +17,6 @@ export type PilotView = {
 };
 
 const NAMES: Record<string, string> = { USDC: "USD Coin", USDT: "Tether", NEAR: "NEAR", BTC: "Bitcoin", ETH: "Ethereum", SOL: "Solana", ZEC: "Zcash" };
-const STRAT: Record<string, string> = { rebalance: "Constant mix", trend: "Trend filter", vol_target: "Volatility target", dca: "Weekly buys" };
 
 const when = (t: number) => {
   const d = new Date(t), now = new Date();
@@ -52,7 +52,7 @@ function runToMove(r: Record<string, any>, pilot: Pilot): Move {
   const execs: Record<string, any>[] = r.executions ?? [];
   const blocked = execs.filter((e) => e.status === "blocked" || e.status === "refused");
   const notes: string[] = (out.notes ?? []).map(humanNote);
-  const strategy = STRAT[pilot.strategy.id] ?? pilot.strategy.id;
+  const strategy = STARTER_NAMES[pilot.strategy.id] ?? pilot.strategy.id;
   // What computed the decision. "Attested" only when the run really went through OutLayer's TEE.
   const code = typeof r.wasm_sha256 === "string" ? ` · WASM ${r.wasm_sha256.slice(0, 10)}…` : "";
   const run = r.engine === "outlayer" ? `OutLayer TEE, attested${code}` : `This server${code}`;

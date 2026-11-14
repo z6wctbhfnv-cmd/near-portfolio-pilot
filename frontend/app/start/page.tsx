@@ -11,9 +11,9 @@ import { api, ApiError, setCurrentPilotId, type Mandate, type ParseResult, type 
 import { LIMIT_EXAMPLES, PRESETS, applyLimits, parseLimit, presetOf, presetPatch, type Limit, type Preset } from "@/lib/limits";
 import { createPasskey, forgetPasskey, fullAccessKeys, NEP366_MISSING, passkeySupported, savedPasskey, type Owner, type OwnerAction, type PasskeyOwner } from "@/lib/owner";
 import { RISK_NOTICE } from "@/lib/config";
+import { STARTER_NAMES } from "@/lib/starters";
 
 const money = (n: number | null | undefined) => (n == null ? "—" : `$${n.toLocaleString("en-US")}`);
-const STRAT: Record<string, string> = { rebalance: "Constant mix", trend: "Trend filter", vol_target: "Volatility target", dca: "Weekly buys" };
 const DAY: Record<string, string> = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
 
 /** Turns the mandate into readable rule rows. */
@@ -27,7 +27,7 @@ function rowsFrom(m: Mandate, s: StrategyRef) {
     { k: "Trades an hour", v: m.max_actions_per_hour ? `up to ${m.max_actions_per_hour}` : "—" },
     { k: "Risk", v: m.risk[0].toUpperCase() + m.risk.slice(1) },
     { k: "Assets", v: [...m.assets, m.stable].join(", ") },
-    { k: "Strategy", v: `${STRAT[s.id] ?? s.id}${mix ? ` · ${mix}` : ""}` },
+    { k: "Strategy", v: `${STARTER_NAMES[s.id] ?? s.id}${mix ? ` · ${mix}` : ""}` },
     ...(m.owner_approval ? [{ k: "Approval", v: "You approve every trade" }] : []),
     ...(m.timelock_minutes ? [{ k: "Delay", v: `${m.timelock_minutes} min before each trade` }] : []),
     ...(m.schedule ? [{ k: "When", v: `${m.schedule.days.map((d) => DAY[d] ?? d).join(", ")} · ${m.schedule.start}–${m.schedule.end} ${m.schedule.time_zone}` }] : []),

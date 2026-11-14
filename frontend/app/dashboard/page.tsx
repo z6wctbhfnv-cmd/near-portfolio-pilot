@@ -9,8 +9,8 @@ import { usd, type Move } from "@/lib/demo";
 import { TasksCard } from "@/components/TasksCard";
 import { OwnerPanel } from "@/components/OwnerPanel";
 import { CopyingCard, FeesCard, HealthCard, SwarmCard } from "@/components/PilotCards";
+import { STARTER_NAMES } from "@/lib/starters";
 
-const STRAT: Record<string, string> = { rebalance: "Constant mix", trend: "Trend filter", vol_target: "Volatility target", dca: "Weekly buys" };
 
 export default function Dashboard() {
   const [open, setOpen] = useState<Move | null>(null);
@@ -73,7 +73,7 @@ export default function Dashboard() {
               ? <p className="truncate text-[20px] font-semibold text-ink">{accountId}</p>
               : <button onClick={connect} className="text-[20px] font-semibold text-ink underline decoration-yel decoration-2 underline-offset-4 hover:text-yel">Connect wallet</button>}
             <motion.p key={total} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="display num mt-3 text-[clamp(2.4rem,9vw,3.5rem)]">{usd(Math.round(total * 100) / 100)}</motion.p>
-            <p className="mt-1 text-[16px] text-dim">{`${pilot?.mode === "live" ? "Live" : "Paper"} pilot · ${pilot?.swarm ? `${pilot.swarm.scripts.length} scripts` : pilot?.following ? `copying ${pilot.following.token_id}` : STRAT[pilot!.strategy.id] ?? pilot!.strategy.id}`}</p>
+            <p className="mt-1 text-[16px] text-dim">{`${pilot?.mode === "live" ? "Live" : "Paper"} pilot · ${pilot?.swarm ? `${pilot.swarm.scripts.length} scripts` : pilot?.following ? `copying ${pilot.following.token_id}` : STARTER_NAMES[pilot!.strategy.id] ?? pilot!.strategy.id}`}</p>
             <div className="mt-6 grid grid-cols-4 sm:max-w-[420px]">
               <Action icon={busy === "run" ? "…" : "▶"} label="Run now" active onClick={live ? runNow : undefined} />
               <Action icon="⇄" label="Strategy" onClick={() => location.assign("/strategies")} />
@@ -145,7 +145,7 @@ export default function Dashboard() {
 
           <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} whileHover="hover" className="card relative overflow-hidden p-6">
             <p className="text-[14px] text-dim">Running strategy</p>
-            <p className="display mt-2 pr-28 text-[24px]">{pilot ? STRAT[pilot.strategy.id] ?? pilot.strategy.id : ""}</p>
+            <p className="display mt-2 pr-28 text-[24px]">{pilot ? STARTER_NAMES[pilot.strategy.id] ?? pilot.strategy.id : ""}</p>
             <p className="mt-1 max-w-[24ch] text-[15px] text-dim">{pilot ? `Next run ${new Date(pilot.next_run_at).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : ""}</p>
             <Link href="/strategies" className="mt-4 inline-flex items-center gap-1 text-[15px] font-semibold text-yel">Change strategy <span>→</span></Link>
             <motion.img src="/3d/balance.png" alt="" className="absolute -bottom-3 -right-2 h-32 w-32" variants={{ hover: { rotate: -8, scale: 1.08 } }} transition={{ type: "spring", stiffness: 260, damping: 12 }} />

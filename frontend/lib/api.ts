@@ -74,6 +74,9 @@ export type SwarmScript = { key: string; id: string; params: Record<string, unkn
 export type Swarm = { swarm: { scripts: SwarmScript[]; allocation?: string } | null; state: { alloc: Record<string, number>; alloc_reason: string; sleeves: { key: string; cash: boolean; share: number | null; value_usd: number }[] } | null };
 export type PriceTask = { id: string; asset: string; op: "<" | ">"; price: number; side: "buy" | "sell"; usd: number; status: string; text: string | null; fired_at: number | null; fired_price: number | null };
 
+export type ChangedScript = { code_hash: string; base: string; base_name: string; params: Record<string, unknown>; name: string | null };
+export type TokenScript = { token_id: string; runnable: boolean; kind: "starter" | "changed" | "research"; base?: string; params?: Record<string, unknown>; code_hash?: string; base_name?: string };
+
 const list = <T,>(p: Promise<{ data: T[] }>) => p.then((r) => r.data);
 
 export const api = {
@@ -129,6 +132,12 @@ export const api = {
   addTask: (id: string, t: { asset: string; op: "<" | ">"; price: number; side: "buy" | "sell"; usd: number; text?: string }) => req<PriceTask>(`/v1/pilots/${id}/tasks`, { json: t }),
   cancelTask: (id: string, taskId: string) => req<PriceTask>(`/v1/pilots/${id}/tasks/${taskId}`, { method: "DELETE" }),
   referrer: (id: string, referrer: string) => req<{ pilot: Pilot; note: string }>(`/v1/pilots/${id}/referrer`, { json: { referrer } }),
+
+  /** A changed starter: the backend checks the settings and returns the code hash to mint. */
+  registerScript: (base: string, params: Record<string, unknown>, name?: string) => req<ChangedScript>("/v1/scripts", { json: { base, params, ...(name ? { name } : {}) } }),
+  scriptByHash: (hash: string) => req<ChangedScript>(`/v1/scripts/hash/${hash}`),
+  /** What dolya's runner can do with a script NFT: a starter, a changed starter, or research only. */
+  scriptForToken: (token: string) => req<TokenScript>(`/v1/scripts/${encodeURIComponent(token)}/script`),
 
   /** NEAR AI drafts a script from an idea (needs NEARAI_API_KEY on the backend). */
   draftScript: (idea: string) => req<{ code: string; model: string }>("/v1/scripts/draft", { json: { idea } }),
