@@ -24,7 +24,7 @@ Once a week it appends one checkpoint per minted script: the average period retu
 
 The recorder also credits fees that agents withdrew to the contract (`record_fee_payment`, see `backend/src/fees.ts`) and, when `NFT_REPORT_COPIED_CAPITAL=true`, reports copiers' capital (`set_copied_capital`). Both take no deposit; the recorder's function-call key must list them too.
 
-**Not deployed yet.** `record_fee_payment`, `fee_payment`, `liabilities` and the offer methods exist only in this source: `pilot-nft2-14805.testnet` runs the previous build. See "Upgrade the deployed contract" below.
+**Deployed on testnet 2026-11-14** (code hash `61FE1YnYg2iaw3p9aPWRA8X4bxtsLu86ddF2rENg7Nuy`): offers, `record_fee_payment`, `fee_payment` and `liabilities` are live. The bonds (step 3 below) are still $0.
 
 ## Main methods
 
