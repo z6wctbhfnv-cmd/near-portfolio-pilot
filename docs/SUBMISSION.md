@@ -9,8 +9,8 @@ Deadline: **14 November 2026, 23:59 UTC** (15 November, 02:59 Moscow time). A su
 - [ ] `npm run setup && npm run tour` passes on a fresh clone of `main`.
 - [ ] No keys in the repository or its history (`.env` is git-ignored; scan in [HANDOFF.md](../HANDOFF.md)).
 - [ ] The demo video is posted on X (text below) and the post is public.
-- [ ] A mainnet NEAR account for the prize: a named account like `team.near` or a 64-character implicit one.
-- [ ] Team overlap. One person may be in at most two projects, and then each project's README must name the other. This README names Knight's Isle (under "Hackathon notes"); the Knight's Isle README must name dolya. If nobody is in both teams, delete that line.
+- [x] Mainnet NEAR account for the prize: `larperr.near`.
+- [x] Team overlap: none. dolya is the team's only entry (Knight's Isle is not submitted).
 - [ ] One email can send at most two submissions.
 
 ## The form (https://nearhackathon.com/#apply)
@@ -22,7 +22,8 @@ Deadline: **14 November 2026, 23:59 UTC** (15 November, 02:59 Moscow time). A su
 | Repository | `https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot` |
 | Demo post | the link to the X post |
 | Website | **leave empty** (the rules say a filled value rejects the submission) |
-| Team lead, email, team size, payout account | yours |
+| Payout account | `larperr.near` |
+| Team lead, email, team size | yours |
 
 ### "What did you build?" (up to 2,000 characters)
 
