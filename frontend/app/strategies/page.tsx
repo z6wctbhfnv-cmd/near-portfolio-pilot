@@ -71,12 +71,12 @@ export default function Strategies() {
                 </div>
                 <div className="mt-4"><Area data={s.curve} id={s.id} /></div>
                 <div className="mt-4 grid grid-cols-3 gap-2">
-                  <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">90 days</p><Change v={s.ret} className="mt-1 block text-[18px] font-bold sm:text-[20px]" /></div>
-                  <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">Worst dip</p><p className="num mt-1 text-[18px] font-bold text-down sm:text-[20px]">{s.dd.toFixed(1)}%</p></div>
+                  <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">90 days</p>{s.source === "backtest" ? <Change v={s.ret} className="mt-1 block text-[18px] font-bold sm:text-[20px]" /> : <p className="mt-1 text-[18px] font-bold text-dim sm:text-[20px]">—</p>}</div>
+                  <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">Worst dip</p>{s.source === "backtest" ? <p className="num mt-1 text-[18px] font-bold text-down sm:text-[20px]">{s.dd.toFixed(1)}%</p> : <p className="mt-1 text-[18px] font-bold text-dim sm:text-[20px]">—</p>}</div>
                   <div className="rounded-[16px] bg-card2 p-3"><p className="text-[12px] text-dim">Just holding</p>{s.bench === null ? <p className="mt-1 text-[18px] font-bold text-dim sm:text-[20px]">—</p> : <Change v={s.bench} className="mt-1 block text-[18px] font-bold sm:text-[20px]" />}</div>
                 </div>
                 <div className="mt-5 flex items-center justify-between text-[15px] font-semibold">
-                  <span className="text-dim">{s.source === "backtest" ? "Backtest · 30 bps per swap" : s.source === "none" ? "No backtest right now" : "Demo data"}</span>
+                  <span className="text-dim">{s.source === "backtest" ? "Backtest · 30 bps per swap" : s.source === "loading" ? "Backtesting…" : "No backtest right now"}</span>
                   <span className="flex items-center gap-1 text-yel">Details <span className="transition-transform group-hover:translate-x-1">→</span></span>
                 </div>
               </motion.button>
@@ -94,7 +94,7 @@ export default function Strategies() {
               <img src={`/3d/${open.img}.png`} alt="" className="h-20 w-20" />
               <div className="min-w-0">
                 <h3 className="display text-[24px]">{open.name}</h3>
-                <p className="text-[14px] text-dim">{open.risk} risk · {open.source === "backtest" ? "90-day backtest" : open.source === "none" ? "no backtest right now" : "demo"}</p>
+                <p className="text-[14px] text-dim">{open.risk} risk · {open.source === "backtest" ? "90-day backtest" : open.source === "loading" ? "backtesting…" : "no backtest right now"}</p>
               </div>
             </div>
             <p className="mt-4 text-[17px] leading-snug">{open.tagline}</p>

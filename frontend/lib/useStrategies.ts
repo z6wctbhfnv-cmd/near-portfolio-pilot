@@ -1,22 +1,20 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, currentPilotId, type Backtest } from "./api";
-import { strategies as demo } from "./demo";
 import { STARTERS, STARTER_NAMES, paramsForAssets } from "./starters";
 
 export type StrategyCard = {
   id: string; name: string; tagline: string; img: string; risk: "Low" | "Medium";
-  ret: number; dd: number; bench: number | null; curve: number[]; params: Record<string, unknown>; source: "backtest" | "demo" | "none";
+  ret: number; dd: number; bench: number | null; curve: number[]; params: Record<string, unknown>; source: "backtest" | "loading" | "none";
 };
 
 /** What each starter looks like in the UI, with the params we backtest it on (lib/starters.ts). */
 const META: Record<string, { img: string; risk: "Low" | "Medium"; tagline: string; params: Record<string, unknown> }> =
   Object.fromEntries(STARTERS.map((x) => [x.id, { img: x.img, risk: x.risk, tagline: x.tagline, params: x.params }]));
 
-const demoCards: StrategyCard[] = demo.map((s) => ({
-  id: s.id, name: s.name, tagline: s.tagline, img: { calm: "balance", dca: "calendar", trend: "arrow", stable: "blocks" }[s.id] ?? "sparkle",
-  risk: s.risk === "Low" ? "Low" : "Medium", ret: s.ret, dd: s.dd, bench: null, curve: s.spark, params: {}, source: "demo",
-}));
+/** The nine starters before their backtests answer: no numbers until there are real ones. */
+const startCards = (source: "loading" | "none"): StrategyCard[] =>
+  STARTERS.map((x) => ({ id: x.id, name: STARTER_NAMES[x.id] ?? x.id, tagline: x.tagline, img: x.img, risk: x.risk, ret: 0, dd: 0, bench: null, curve: [1, 1], params: x.params, source }));
 
 /** Reads metrics from a backtest answer without depending on exact field names. */
 function readBacktest(b: Backtest) {
@@ -34,7 +32,7 @@ function readBacktest(b: Backtest) {
 }
 
 export function useStrategies() {
-  const [cards, setCards] = useState<StrategyCard[]>(demoCards);
+  const [cards, setCards] = useState<StrategyCard[]>(() => startCards("loading"));
   const [live, setLive] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -58,7 +56,7 @@ export function useStrategies() {
         setCards(out); setLive(true);
         const pid = currentPilotId();
         if (pid) setActiveId((await api.pilot(pid)).strategy.id);
-      } catch { /* backend offline: keep demo cards */ }
+      } catch { if (alive) setCards(startCards("none")); /* backend offline: cards without numbers */ }
     })();
     return () => { alive = false; };
   }, []);
