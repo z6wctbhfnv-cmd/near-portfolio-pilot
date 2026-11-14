@@ -2,6 +2,8 @@
 
 **Your moves, explained. Copy, create, earn.** Built at NEAR HACKATHON, November 2026.
 
+**Live demo: [dolya.trade](https://dolya.trade).** No wallet or keys needed: open Portfolio → "Start with $1,000 of paper money", then Leaderboard → a strategy NFT → "Copy". It trades paper money on live prices and reads strategy NFTs from NEAR testnet. On the live site, scheduled work (price tasks, weekly fees) runs once a day; run it locally (below) to see a price task fire within a minute.
+
 dolya ("доля": a share, a slice) lets you tell software how to handle your crypto in plain words, sign those rules once, and then read a reason for every move it makes. Strategies are NFTs with a public record: you can copy one, write your own, or buy one together with the income it earns.
 
 1. **Say it.** "Careful: NEAR, BTC and ETH. Max $300 a day, $50 per trade." becomes exact limits.

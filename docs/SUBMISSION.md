@@ -52,6 +52,8 @@ Tell it how to handle your crypto in plain words. Sign once. Read a reason for e
 
 Strategies are NFTs: copy one, write your own, or buy one with the income it earns.
 
+Try it: dolya.trade
+
 @NEARProtocol #NEARHackathon
 ```
 
