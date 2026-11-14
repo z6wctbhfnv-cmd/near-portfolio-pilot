@@ -18,7 +18,7 @@ Deadline: **14 November 2026, 23:59 UTC** (15 November, 02:59 Moscow time). A su
 | Field | Value |
 |---|---|
 | Project name | `dolya` |
-| Tracks | NFTs That Do Something, AI Security & Defense, Unstoppable DeFi, AI Swarms, Agent Economy |
+| Tracks | NFTs That Do Something, Unstoppable DeFi, AI Security & Defense, Agent Economy (not AI Swarms: our multi-script agent is not a market between agents) |
 | Repository | `https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot` |
 | Demo post | the link to the X post |
 | Website | **leave empty** (the rules say a filled value rejects the submission) |
