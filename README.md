@@ -143,7 +143,8 @@ To go beyond paper mode, copy `.env.example` to `.env`; every key is optional an
 ## Hackathon notes
 
 - All code in this repository was written during the hackathon; the first commit is dated 9 November 2026. There is no pre-hackathon code.
-- Built by a small team working with Claude Code.
+- Built by a small team. **Most of the code was written with AI coding tools (Claude Code)** and reviewed and tested by the team.
+- Main libraries: backend: Fastify, zod, `@near-intents-agent-api/sdk`, near-api-js, `@libsql/client`, vitest; site: Next.js, React, Tailwind CSS, framer-motion, three.js, NEAR Wallet Selector; contract: near-sdk, near-contract-standards; strategies: serde / serde_json (Rust → WASM); research simulation: pandas, numpy. Full lists: each `package.json` and `Cargo.toml`.
 
 ## License
 
