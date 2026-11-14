@@ -19,7 +19,7 @@ You need **Node 22 or 24** (`nvm install 24 && nvm use 24`; both are tested) and
 git clone https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot && cd near-portfolio-pilot
 npm run setup     # installs backend/ and frontend/ dependencies
 npm run tour      # walks the whole product path in about a minute; exit code 0 = every step did what it says
-npm test          # 92 backend tests against in-process fakes, no network
+npm test          # 93 backend tests against in-process fakes, no network
 npm run dev       # backend on http://127.0.0.1:8787, site on http://localhost:3000
 ```
 
@@ -69,7 +69,7 @@ Buying, listing and offers on the leaderboard are real testnet transactions sign
 | Rules → mandate → policy (swaps only, no destination, USD budget, per-asset caps) | Real | Tests, tour step 1 |
 | Paper portfolios on live prices, with the mandate's caps enforced | Real | Tests, tour, the site |
 | Prices | Agent API token list; falls back to the production host and then to spot tickers, so the demo survives the demo host going away | Test |
-| Strategy NFT contract (`contracts/strategy-nft`) | Deployed on **testnet** (an earlier build: mint, weekly record, follow, bond, copy fee, list / buy, referrer). The repo's contract also has fee crediting (`record_fee_payment`) and **offers** (`make_offer`, `accept_offer`, `cancel_offer`); those are unit-tested and not deployed yet | 63 contract tests |
+| Strategy NFT contract (`contracts/strategy-nft`) | Deployed on **testnet** (`pilot-nft2-14805.testnet`, upgraded 14 Nov 2026): mint, weekly record, follow, bond, copy fee, list / buy, referrer, fee crediting (`record_fee_payment`) and **offers** (`make_offer`, `accept_offer`, `cancel_offer`) | 63 contract tests |
 | Leaderboard and market UI | Reads testnet live. Wallet-signed calls are implemented; none was signed during development | Manual, read paths |
 | Copying a strategy | Paper: real, with the holder and bond read from chain. Live: waits for the contract on mainnet (the Agent API is mainnet-only) | Tests, tour step 4 |
 | Weekly copy fees with a high-water mark | Paper ledger: real. Live payment path: against fakes only | Tests |
@@ -144,7 +144,6 @@ To go beyond paper mode, copy `.env.example` to `.env`; every key is optional an
 
 - All code in this repository was written during the hackathon; the first commit is dated 9 November 2026. There is no pre-hackathon code.
 - Built by a small team working with Claude Code.
-- Some of the same people also work on one other, independent entry: Knight's Isle (`z6wctbhfnv-cmd/knights-isle`), an idle island game in Telegram. The rules ask each README to name the other.
 
 ## License
 

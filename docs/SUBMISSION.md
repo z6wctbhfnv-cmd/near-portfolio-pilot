@@ -9,8 +9,8 @@ Deadline: **14 November 2026, 23:59 UTC** (15 November, 02:59 Moscow time). A su
 - [ ] `npm run setup && npm run tour` passes on a fresh clone of `main`.
 - [ ] No keys in the repository or its history (`.env` is git-ignored; scan in [HANDOFF.md](../HANDOFF.md)).
 - [ ] The demo video is posted on X (text below) and the post is public.
-- [ ] A mainnet NEAR account for the prize: a named account like `team.near` or a 64-character implicit one.
-- [ ] Team overlap. One person may be in at most two projects, and then each project's README must name the other. This README names Knight's Isle (under "Hackathon notes"); the Knight's Isle README must name dolya. If nobody is in both teams, delete that line.
+- [x] Mainnet NEAR account for the prize: `larperr.near`.
+- [x] Team overlap: none. dolya is the team's only entry (Knight's Isle is not submitted).
 - [ ] One email can send at most two submissions.
 
 ## The form (https://nearhackathon.com/#apply)
@@ -22,7 +22,8 @@ Deadline: **14 November 2026, 23:59 UTC** (15 November, 02:59 Moscow time). A su
 | Repository | `https://github.com/z6wctbhfnv-cmd/near-portfolio-pilot` |
 | Demo post | the link to the X post |
 | Website | **leave empty** (the rules say a filled value rejects the submission) |
-| Team lead, email, team size, payout account | yours |
+| Payout account | `larperr.near` |
+| Team lead, email, team size | yours |
 
 ### "What did you build?" (up to 2,000 characters)
 
@@ -37,7 +38,7 @@ dolya lets you tell software how to handle your crypto in plain words, sign thos
 
 4. A main agent can run several scripts in one wallet and net their trades. A daily health check asks the owner "Pause / Keep running". One NEAR AI agent writes a weekly review and can only propose small, bounded parameter changes.
 
-What runs today: paper portfolios on live prices end to end (site and API); the strategy NFT contract on NEAR testnet with a live leaderboard; backtests by the production WASM; 92 backend tests and 63 contract tests; and "npm run tour", which walks the whole path in about a minute with no keys. Live trading through the Agent API is implemented on the official SDK and tested against a fake API; it is off by default.
+What runs today: paper portfolios on live prices end to end (site and API); the strategy NFT contract on NEAR testnet (offers included) with a live leaderboard; backtests by the production WASM; 93 backend tests and 63 contract tests; every pilot is opened only with the key its creator received; and "npm run tour", which walks the whole path in about a minute with no keys. Live trading through the Agent API is implemented on the official SDK and tested against a fake API; it is off by default.
 ```
 
 ## The X post

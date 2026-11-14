@@ -24,7 +24,7 @@
 | 7 | 2:10–2:20 | Freeze | Красная плашка | "One tap freezes everything." |
 | 8 | 2:20–2:40 | Главная или README | Ссылки | "NEAR Intents enforces the policy. A NEAR contract holds the strategy NFTs, the fees and the bonds. Strategies are WASM, built for OutLayer's TEE. NEAR AI reads the rules and writes the weekly review. The repo has a one-minute tour you can run with no keys." |
 
-Блок Offers в сцене 6 заработает на живом контракте после его обновления в тестнете. До этого сайт сам пишет, что предложения откроются после обновления; тогда в этой сцене покажи покупку выставленной стратегии.
+Контракт в тестнете обновлён 14 ноября: блок Offers в сцене 6 работает вживую (предложение отправляется из тестнет-кошелька).
 
 ## Вопросы, которые зададут
 
