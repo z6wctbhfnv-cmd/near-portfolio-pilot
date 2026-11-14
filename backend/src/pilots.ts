@@ -23,6 +23,8 @@ export type PilotRow = {
   next_review_at: number | null;
   /** The drawdown stop measures the peak from here (creation, or the owner's last resume). */
   risk_since: number | null;
+  /** sha256 (hex) of the pilot key; null for pilots created before keys existed. Never returned. */
+  key_hash?: string | null;
   swarm_json: string | null;
   swarm_state_json: string | null;
   following_json: string | null;

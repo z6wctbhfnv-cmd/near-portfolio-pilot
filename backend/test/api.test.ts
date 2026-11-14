@@ -15,7 +15,7 @@ function setup(env: Record<string, string> = {}) {
   const server = buildServer(t.app);
   servers.push(server);
   const call = async (method: "GET" | "POST" | "PUT" | "PATCH", url: string, payload?: unknown, headers: Record<string, string> = {}) => {
-    const res = await server.inject({ method, url, payload: payload as never, headers });
+    const res = await server.inject({ method, url, payload: payload as never, headers: { authorization: "Bearer test-admin", ...headers } });
     return { status: res.statusCode, body: res.json() as any };
   };
   return { ...t, server, call };
@@ -39,12 +39,37 @@ describe("meta routes", () => {
     expect(u.find((a: { symbol: string }) => a.symbol === "NEAR").price).toBe(4);
   });
 
-  it("requires the bearer token when one is configured", async () => {
+  it("lists all pilots only for the operator token", async () => {
     const { call } = setup({ PILOT_API_TOKEN: "s3cret" });
-    expect((await call("GET", "/health")).status).toBe(200);
-    expect((await call("GET", "/v1/pilots")).status).toBe(401);
-    expect((await call("GET", "/v1/pilots", undefined, { authorization: "Bearer wrong!" })).status).toBe(401);
+    expect((await call("GET", "/health", undefined, { authorization: "" })).status).toBe(200);
+    expect((await call("GET", "/v1/pilots", undefined, { authorization: "" })).status).toBe(403);
+    expect((await call("GET", "/v1/pilots", undefined, { authorization: "Bearer wrong!" })).status).toBe(403);
     expect((await call("GET", "/v1/pilots", undefined, { authorization: "Bearer s3cret" })).status).toBe(200);
+  });
+
+  it("pilot keys: only the creator's key opens a pilot and what belongs to it", async () => {
+    const { call } = setup();
+    const anon = { authorization: "" };
+    const made = await call("POST", "/v1/pilots", { name: "Mine", strategy: { id: "rebalance", params: { weights: { NEAR: 0.5 } } }, initial_usd: 100 }, anon);
+    expect(made.status).toBe(201);
+    const id = made.body.pilot.id as string;
+    const key = made.body.pilot_key as string;
+    expect(key).toMatch(/^pk_/);
+    const mine = { ...anon, "x-pilot-key": key };
+    const other = { ...anon, "x-pilot-key": "pk_someone_else" };
+    expect((await call("GET", `/v1/pilots/${id}`, undefined, anon)).status).toBe(401);
+    expect((await call("GET", `/v1/pilots/${id}`, undefined, other)).status).toBe(401);
+    expect((await call("PATCH", `/v1/pilots/${id}`, { paused: true }, other)).status).toBe(401);
+    expect((await call("GET", `/v1/pilots/${id}`, undefined, mine)).status).toBe(200);
+    const run = await call("POST", `/v1/pilots/${id}/run`, undefined, mine);
+    expect(run.status).toBe(200);
+    // Things that belong to the pilot are guarded too.
+    expect((await call("GET", `/v1/runs/${run.body.id}`, undefined, anon)).status).toBe(401);
+    expect((await call("GET", `/v1/runs/${run.body.id}`, undefined, mine)).status).toBe(200);
+    // The key is never shown again.
+    expect(JSON.stringify((await call("GET", `/v1/pilots/${id}`, undefined, mine)).body)).not.toContain("key_hash");
+    // The operator still opens everything.
+    expect((await call("GET", `/v1/pilots/${id}`)).status).toBe(200);
   });
 
   it("parses a mandate with the AI and falls back to rules on a bad answer", async () => {

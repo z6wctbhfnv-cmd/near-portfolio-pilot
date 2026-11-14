@@ -13,7 +13,11 @@ async function req<T>(path: string, init?: RequestInit & { json?: unknown }): Pr
     res = await fetch(API_BASE + path, {
       ...rest,
       method: rest.method ?? (json !== undefined ? "POST" : "GET"),
-      headers: { ...(json !== undefined ? { "content-type": "application/json" } : {}), ...(rest.headers ?? {}) },
+      headers: {
+        ...(json !== undefined ? { "content-type": "application/json" } : {}),
+        ...(currentPilotKey() ? { "x-pilot-key": currentPilotKey()! } : {}),
+        ...(rest.headers ?? {}),
+      },
       body: json !== undefined ? JSON.stringify(json) : rest.body,
     });
   } catch {
@@ -83,7 +87,7 @@ export const api = {
   parse: (text: string) => req<ParseResult>("/v1/mandate/parse", { json: { text } }),
   compile: (mandate: Mandate) => req<Omit<ParseResult, "notes" | "source">>("/v1/mandate/compile", { json: { mandate } }),
   createPilot: (body: { name: string; text?: string; mandate?: Mandate; initial_usd: number; mode?: "paper" | "live"; owner?: Owner; accepted_terms?: boolean }) =>
-    req<{ pilot: Pilot; notes?: string[]; warnings?: string[]; owner_action?: OwnerAction }>("/v1/pilots", { json: body }),
+    req<{ pilot: Pilot; pilot_key?: string; notes?: string[]; warnings?: string[]; owner_action?: OwnerAction }>("/v1/pilots", { json: body }),
   pilots: () => list<Pilot>(req("/v1/pilots")),
   pilot: (id: string) => req<Pilot & { pilot?: Pilot }>(`/v1/pilots/${id}`).then((r) => (r.pilot ?? r) as Pilot),
   patchPilot: (id: string, body: { name?: string; paused?: boolean; review_auto_apply?: boolean; drawdown_stop?: { enabled?: boolean; max_drawdown?: number } }) => req<unknown>(`/v1/pilots/${id}`, { method: "PATCH", json: body }),
@@ -132,5 +136,13 @@ export const api = {
 
 /* ---------- the pilot this browser is looking at ---------- */
 const KEY = "dolya.pilot";
+const PILOT_KEY = "dolya.pilotKey";
 export const currentPilotId = () => { try { return localStorage.getItem(KEY); } catch { return null; } };
-export const setCurrentPilotId = (id: string | null) => { try { if (id) localStorage.setItem(KEY, id); else localStorage.removeItem(KEY); } catch { /* storage blocked */ } };
+/** The pilot key the backend handed out when this browser created the pilot: it opens that pilot only. */
+export const currentPilotKey = () => { try { return localStorage.getItem(PILOT_KEY); } catch { return null; } };
+export const setCurrentPilotId = (id: string | null, key?: string | null) => {
+  try {
+    if (id) localStorage.setItem(KEY, id); else localStorage.removeItem(KEY);
+    if (!id) localStorage.removeItem(PILOT_KEY); else if (key) localStorage.setItem(PILOT_KEY, key);
+  } catch { /* storage blocked */ }
+};
