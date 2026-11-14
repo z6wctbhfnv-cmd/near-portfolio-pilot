@@ -89,7 +89,7 @@ More detail, including what was never run for real, is in [HANDOFF.md](HANDOFF.m
 
 ## Tracks
 
-NFTs That Do Something · AI Security & Defense · Unstoppable DeFi · AI Swarms · Agent Economy.
+NFTs That Do Something · Unstoppable DeFi · AI Security & Defense · Agent Economy.
 
 ## How it fits together
 
