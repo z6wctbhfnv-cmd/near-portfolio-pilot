@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api, currentPilotId, setCurrentPilotId, type Pilot, type Portfolio, type Review } from "./api";
-import { holdings as demoHoldings, moves as demoMoves, series as demoSeries, total as demoTotal, type Move } from "./demo";
+import type { Move } from "./demo";
 
 export type Holding = { sym: string; name: string; amount: string; usd: number; change: number; target: number };
 export type PilotView = {
@@ -53,14 +53,17 @@ function runToMove(r: Record<string, any>, pilot: Pilot): Move {
   const blocked = execs.filter((e) => e.status === "blocked" || e.status === "refused");
   const notes: string[] = (out.notes ?? []).map(humanNote);
   const strategy = STRAT[pilot.strategy.id] ?? pilot.strategy.id;
+  // What computed the decision. "Attested" only when the run really went through OutLayer's TEE.
+  const code = typeof r.wasm_sha256 === "string" ? ` · WASM ${r.wasm_sha256.slice(0, 10)}…` : "";
+  const run = r.engine === "outlayer" ? `OutLayer TEE, attested${code}` : `This server${code}`;
   const budget = pilot.mandate.budget.weekly_usd;
-  const rule = budget ? `Max $${budget} a week` : "Inside your signed limits";
+  const rule = budget ? `Max $${budget} a week` : pilot.mode === "live" ? "Inside your signed limits" : "Inside your limits";
   if (r.status === "error") {
-    return { id: r.id, when: when(r.started_at), kind: "review", title: "Run skipped", why: `${friendlyError(String(r.error ?? ""))} Nothing moved, your money is where it was.`, rule, strategy };
+    return { id: r.id, when: when(r.started_at), kind: "review", title: "Run skipped", why: `${friendlyError(String(r.error ?? ""))} Nothing moved, your money is where it was.`, rule, strategy, run };
   }
   if (!trades.length) {
     return { id: r.id, when: when(r.started_at), kind: "hold", title: "Held, no trade",
-      why: notes[0] ? `Checked the market: ${notes.join("; ")}. Everything sits inside your target, so nothing was traded.` : "Every holding is within its target band, so trading would only cost fees.", rule, strategy };
+      why: notes[0] ? `Checked the market: ${notes.join("; ")}. Everything sits inside your target, so nothing was traded.` : "Every holding is within its target band, so trading would only cost fees.", rule, strategy, run };
   }
   const t = trades[0];
   const wanted = trades.reduce((s, x) => s + x.usd, 0);
@@ -75,7 +78,7 @@ function runToMove(r: Record<string, any>, pilot: Pilot): Move {
     : capped
       ? `${cause}. The strategy wanted to move $${wanted.toFixed(0)}, but your rules cap a trade${limit ? ` at $${limit}` : ""}, so it moved $${done.toFixed(0)} now and will finish over the next runs.`
       : `${cause}, so ${strategy.toLowerCase()} moved $${done.toFixed(0)} back toward your target.`;
-  return { id: r.id, when: when(r.started_at), kind: blocked.length && !done ? "hold" : "swap", title, amount: `$${done.toFixed(0)}`, why, rule: capped && limit ? `Trades up to $${limit}` : rule, strategy };
+  return { id: r.id, when: when(r.started_at), kind: blocked.length && !done ? "hold" : "swap", title, amount: `$${done.toFixed(0)}`, why, rule: capped && limit ? `Trades up to $${limit}` : rule, strategy, run };
 }
 
 function seriesFrom(snaps: { ts?: number; total_usd?: number }[], fallback: number) {
@@ -85,21 +88,21 @@ function seriesFrom(snaps: { ts?: number; total_usd?: number }[], fallback: numb
   return { "1D": tail(24), "1W": tail(7 * 24), "1M": tail(30 * 24), "1Y": pts };
 }
 
-const demo: PilotView = {
-  live: false, pilot: null, total: demoTotal,
-  holdings: demoHoldings.map(({ sym, name, amount, usd, change, target }) => ({ sym, name, amount, usd, change, target })),
-  moves: demoMoves, series: demoSeries, reviews: [], paused: false,
+/** No pilot yet: nothing invented, the dashboard shows an empty state instead. */
+const empty: PilotView = {
+  live: false, pilot: null, total: 0, holdings: [], moves: [],
+  series: { "1D": [0, 0], "1W": [0, 0], "1M": [0, 0], "1Y": [0, 0] }, reviews: [], paused: false,
 };
 
 export function usePilot() {
-  const [view, setView] = useState<PilotView>(demo);
+  const [view, setView] = useState<PilotView>(empty);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const id = currentPilotId();
-    if (!id) { setView(demo); setLoading(false); return; }
+    if (!id) { setView(empty); setLoading(false); return; }
     try {
       const [pilot, pf, runs, snaps, reviews] = await Promise.all([
         api.pilot(id), api.portfolio(id), api.runs(id).catch(() => []), api.snapshots(id).catch(() => []), api.reviews(id).catch(() => []),
@@ -119,9 +122,9 @@ export function usePilot() {
       });
       setError(null);
     } catch (e) {
-      if ((e as { code?: string }).code === "offline") { setView(demo); setError("Backend is offline, showing the demo."); return; }
+      if ((e as { code?: string }).code === "offline") { setView(empty); setError("Can’t reach the dolya server right now."); return; }
       if ((e as { status?: number }).status === 404) setCurrentPilotId(null);
-      setView(demo);
+      setView(empty);
       setError((e as Error).message);
     } finally { setLoading(false); }
   }, []);
@@ -136,8 +139,14 @@ export function usePilot() {
   }, [load]);
 
   const id = view.pilot?.id;
+  /** One click: a paper portfolio with $1,000 of paper money and balanced default rules. */
+  const startPaper = () => act("start", async () => {
+    const r = await api.createPilot({ name: "My paper portfolio", mode: "paper", text: "Balanced: NEAR, BTC and ETH. Max $300 a day, $100 per trade.", initial_usd: 1000 });
+    setCurrentPilotId(r.pilot.id);
+    await api.run(r.pilot.id).catch(() => undefined);
+  });
   return {
-    view, loading, error, busy, reload: load,
+    view, loading, error, busy, reload: load, startPaper,
     runNow: () => id && act("run", () => api.run(id)),
     togglePause: () => id && act("pause", () => api.patchPilot(id, { paused: !view.paused })),
     reviewNow: () => id && act("review", () => api.review(id)),

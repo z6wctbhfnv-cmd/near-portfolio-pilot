@@ -25,6 +25,15 @@
 //! referrer and the treasury withdraw when they like. NFT sales pay no referral. This keeps the agent's policy simple: its only allowed
 //! destination is this contract.
 //!
+//! Two ways a fee arrives:
+//! - `ft_transfer_call` from the payer's own wallet (`ft_on_transfer` splits it at once);
+//! - a NEAR Intents Agent API agent cannot attach a `msg` (its withdraw and transfer calls have no
+//!   such field), so it withdraws plain USDC to this contract (`ft_transfer`, no callback) and the
+//!   recorder then names the payer and the script with `record_fee_payment`. The contract reads its
+//!   own token balance and credits at most the part that is not already owed to anyone
+//!   (`liabilities`), once per payment `reference`. The recorder is trusted to name the payer and
+//!   the script, but it cannot make the contract owe more than it holds.
+//!
 //! The current holder receives the author's share of fees (`revenue_receiver`). Selling the NFT sells
 //! that income and the history with it. Only the `recorder` (the pilot's account) may append
 //! checkpoints, and checkpoints can never be edited or removed.
@@ -63,8 +72,14 @@ pub const PLATFORM_FEE_BPS: u128 = 25;
 pub const REFERRAL_FEE_BPS: u128 = 10;
 /// Pilot's share of an NFT sale price, in basis points; the seller gets the rest (99.5%).
 pub const SALE_FEE_BPS: u128 = 50;
+/// Smallest offer, after its storage is taken from the deposit: 0.01 NEAR.
+pub const MIN_OFFER_YOCTO: u128 = 10_000_000_000_000_000_000_000;
 const GAS_FT_TRANSFER: Gas = Gas::from_tgas(10);
 const GAS_RESOLVE: Gas = Gas::from_tgas(10);
+const GAS_BALANCE_OF: Gas = Gas::from_tgas(5);
+const GAS_ON_BALANCE: Gas = Gas::from_tgas(25);
+/// A fee payment's reference, e.g. "sha256:<hex of the fee terms>", as the Agent API allows.
+const MAX_REFERENCE_LEN: usize = 128;
 
 #[derive(Deserialize)]
 #[serde(crate = "near_sdk::serde")]
@@ -95,6 +110,10 @@ enum StorageKey {
     FeesPaid,
     Listings,
     Referrers,
+    // Appended last so the prefixes above keep their Borsh indices (no state migration).
+    Offers,
+    OfferSet { token_hash: Vec<u8> },
+    OfferSets,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -299,8 +318,17 @@ impl Contract {
     #[private]
     pub fn resolve_withdraw(&mut self, who: AccountId, fee_token: AccountId, amount: U128) -> bool {
         let ok = matches!(env::promise_result_checked(0, 0), Ok(_));
-        if !ok {
-            self.credit(&who, &fee_token, amount.0);
+        if ok {
+            // The tokens have left: only now do they stop being owed. A balance read taken before this
+            // point is now stale, so a fee recording that started earlier must not use it (see
+            // `on_fee_balance`).
+            add_liability(&fee_token, -(amount.0 as i128));
+            env::storage_write(WITHDRAW_SEQ_KEY, &(read_u64(WITHDRAW_SEQ_KEY) + 1).to_le_bytes());
+        } else {
+            // Still owed (withdraw_fees never lowered the liability): give the balance back only.
+            let key = (who, fee_token);
+            let cur = self.balances.get(&key).copied().unwrap_or(0);
+            self.balances.insert(key, cur + amount.0);
         }
         ok
     }
@@ -345,6 +373,92 @@ impl Contract {
             Promise::new(buyer.clone()).transfer(NearToken::from_yoctonear(deposit - price)).detach();
         }
         env::log_str(&format!("sold {token_id} from {seller} to {buyer} for {price} yoctoNEAR"));
+    }
+
+    /// Offer to buy a script NFT at your own price, whether it is listed or not. The attached NEAR is
+    /// held by the contract until the holder accepts it or you cancel. One offer per account and
+    /// script: a new offer replaces yours and the old amount comes back. The offer's storage is taken
+    /// from the deposit and returned when the offer ends.
+    #[payable]
+    pub fn make_offer(&mut self, token_id: TokenId) -> U128 {
+        let bidder = env::predecessor_account_id();
+        let owner = self.tokens.owner_by_id.get(&token_id).unwrap_or_else(|| env::panic_str("unknown strategy"));
+        require!(owner != bidder, "you hold this script");
+        let deposit = env::attached_deposit().as_yoctonear();
+        let key = (token_id.clone(), bidder.clone());
+        let mut amounts = offer_amounts();
+        let previous = amounts.get(&key).copied().unwrap_or(0);
+        let before = env::storage_usage();
+        amounts.insert(key.clone(), 0);
+        amounts.flush();
+        let mut sets = offer_sets();
+        if !sets.contains_key(&token_id) {
+            sets.insert(token_id.clone(), IterableSet::new(StorageKey::OfferSet { token_hash: env::sha256(token_id.as_bytes()) }));
+        }
+        sets.get_mut(&token_id).unwrap().insert(bidder.clone());
+        sets.flush();
+        let storage = env::storage_byte_cost().as_yoctonear() * env::storage_usage().saturating_sub(before) as u128;
+        require!(
+            deposit >= storage + MIN_OFFER_YOCTO,
+            format!("attach at least {} yoctoNEAR: the offer plus {} for storage", storage + MIN_OFFER_YOCTO, storage)
+        );
+        let amount = deposit - storage;
+        amounts.insert(key, amount);
+        amounts.flush();
+        if previous > 0 {
+            Promise::new(bidder.clone()).transfer(NearToken::from_yoctonear(previous)).detach();
+        }
+        env::log_str(&format!("offer {amount} yoctoNEAR for {token_id} by {bidder}"));
+        U128(amount)
+    }
+
+    /// Withdraw your offer: the held NEAR and its storage come back.
+    pub fn cancel_offer(&mut self, token_id: TokenId) -> U128 {
+        let bidder = env::predecessor_account_id();
+        let (amount, freed) = take_offer(&token_id, &bidder);
+        Promise::new(bidder.clone()).transfer(NearToken::from_yoctonear(amount + freed)).detach();
+        env::log_str(&format!("offer for {token_id} by {bidder} cancelled"));
+        U128(amount)
+    }
+
+    /// The holder accepts an offer. `amount` must equal the offer now (it guards against an offer
+    /// replaced in the meantime). The NFT, its record and its future copy fees move to the bidder;
+    /// the seller gets 99.5%, Pilot 0.5%, as with `buy`. A listing for the script is removed.
+    pub fn accept_offer(&mut self, token_id: TokenId, bidder: AccountId, amount: U128) {
+        let seller = env::predecessor_account_id();
+        let owner = self.tokens.owner_by_id.get(&token_id).unwrap_or_else(|| env::panic_str("unknown strategy"));
+        require!(owner == seller, "only the holder can accept an offer");
+        require!(bidder != seller, "already yours");
+        let (price, freed) = take_offer(&token_id, &bidder);
+        require!(price == amount.0, "the offer changed: reload it and try again");
+        self.listings.remove(&token_id);
+        self.tokens.internal_transfer(&seller, &bidder, &token_id, None, Some("pilot offer".to_string()));
+        self.release_bond(&token_id, &seller);
+        let fee = price * SALE_FEE_BPS / 10_000;
+        Promise::new(seller.clone()).transfer(NearToken::from_yoctonear(price - fee)).detach();
+        if fee > 0 {
+            Promise::new(self.treasury.clone()).transfer(NearToken::from_yoctonear(fee)).detach();
+        }
+        if freed > 0 {
+            Promise::new(bidder.clone()).transfer(NearToken::from_yoctonear(freed)).detach();
+        }
+        env::log_str(&format!("sold {token_id} from {seller} to {bidder} for {price} yoctoNEAR (offer)"));
+    }
+
+    /// Open offers for a script: (bidder, yoctoNEAR held), in the order they were made.
+    pub fn offers(&self, token_id: TokenId, from_index: Option<u32>, limit: Option<u32>) -> Vec<(AccountId, U128)> {
+        let amounts = offer_amounts();
+        let sets = offer_sets();
+        let Some(set) = sets.get(&token_id) else { return vec![] };
+        set.iter()
+            .skip(from_index.unwrap_or(0) as usize)
+            .take(limit.unwrap_or(50).min(100) as usize)
+            .map(|a| (a.clone(), U128(amounts.get(&(token_id.clone(), a.clone())).copied().unwrap_or(0))))
+            .collect()
+    }
+
+    pub fn offer_of(&self, token_id: TokenId, account: AccountId) -> Option<U128> {
+        offer_amounts().get(&(token_id, account)).map(|a| U128(*a))
     }
 
     /// The holder replaces the script's code. The record restarts from zero (old checkpoints are no longer
@@ -458,6 +572,7 @@ impl Contract {
             require!(held.0 - amount.0 >= required.0, "copiers follow this script: the bond cannot go below the minimum");
         }
         env::storage_write(&k, &(cur - amount.0).to_le_bytes());
+        add_liability(&fee_token, -(amount.0 as i128));
         self.credit(&who, &fee_token, amount.0);
         self.withdraw_fees(fee_token)
     }
@@ -471,6 +586,7 @@ impl Contract {
             let amt = read_u128(&k);
             if amt > 0 {
                 env::storage_remove(&k);
+                add_liability(&t, -(amt as i128));
                 self.credit(old_holder, &t, amt);
             }
         }
@@ -536,6 +652,7 @@ impl Contract {
         let key = (who.clone(), fee_token.clone());
         let cur = self.balances.get(&key).copied().unwrap_or(0);
         self.balances.insert(key, cur + amount);
+        add_liability(fee_token, amount as i128);
     }
 
     /// Split a fee payment. Returns (holder part, platform part incl. referral).
@@ -579,6 +696,96 @@ impl Contract {
     pub fn set_recorder(&mut self, recorder: AccountId) {
         require!(env::predecessor_account_id() == self.owner, "only the owner");
         self.recorder = recorder;
+    }
+
+    /// A fee paid by an Agent API agent: the agent withdrew `amount` of `fee_token` to this contract with
+    /// a plain transfer, so nothing told the contract who paid. The recorder names the payer (the
+    /// owner's NEAR account, so referrals and "own script" work as with `ft_transfer_call`) and the
+    /// script. The contract checks its own balance and credits at most the unowed surplus, once per
+    /// `reference`. No deposit: a function-call key can call it; the contract pays the marker's storage.
+    pub fn record_fee_payment(&mut self, payer: AccountId, token_id: TokenId, fee_token: AccountId, amount: U128, reference: String) -> Promise {
+        require!(env::predecessor_account_id() == self.recorder, "only the recorder can record payments");
+        require!(self.fee_tokens.contains(&fee_token), "token not accepted for fees");
+        require!(self.strategies.get(&token_id).is_some(), "unknown strategy");
+        require!(amount.0 > 0, "amount must be positive");
+        require!(
+            !reference.is_empty() && reference.len() <= MAX_REFERENCE_LEN && reference.bytes().all(|b| (0x21..=0x7e).contains(&b)),
+            "reference must be 1..128 printable characters"
+        );
+        require!(!env::storage_has_key(&payment_key(&reference)), "payment already recorded");
+        Promise::new(fee_token.clone())
+            .function_call(
+                "ft_balance_of".to_string(),
+                near_sdk::serde_json::json!({ "account_id": env::current_account_id() }).to_string().into_bytes(),
+                NearToken::from_yoctonear(0),
+                GAS_BALANCE_OF,
+            )
+            .then(
+                Promise::new(env::current_account_id()).function_call(
+                    "on_fee_balance".to_string(),
+                    near_sdk::serde_json::json!({
+                        "payer": payer, "token_id": token_id, "fee_token": fee_token, "amount": amount, "reference": reference,
+                        "withdraw_seq": read_u64(WITHDRAW_SEQ_KEY),
+                    })
+                    .to_string()
+                    .into_bytes(),
+                    NearToken::from_yoctonear(0),
+                    GAS_ON_BALANCE,
+                ),
+            )
+    }
+
+    /// Callback of `record_fee_payment`. Returns the amount credited (0 = nothing; the recorder may try
+    /// again later with the same reference).
+    ///
+    /// The balance was read in an earlier block. Money arriving since then only makes the surplus look
+    /// smaller (safe). Money leaving since then would make it look larger: a `withdraw_fees` transfer
+    /// that resolved in between lowered the liabilities but not the balance we read. So when any
+    /// withdrawal resolved after the read (`withdraw_seq` moved), nothing is credited and the recorder
+    /// retries. With that, the contract never credits more than it holds and does not owe.
+    #[private]
+    pub fn on_fee_balance(&mut self, payer: AccountId, token_id: TokenId, fee_token: AccountId, amount: U128, reference: String, withdraw_seq: u64) -> U128 {
+        if read_u64(WITHDRAW_SEQ_KEY) != withdraw_seq {
+            env::log_str(&format!("fee {reference}: a withdrawal settled during the balance check, nothing credited; try again"));
+            return U128(0);
+        }
+        let balance: u128 = match env::promise_result_checked(0, 100) {
+            Ok(bytes) => match near_sdk::serde_json::from_slice::<U128>(&bytes) {
+                Ok(b) => b.0,
+                Err(_) => {
+                    env::log_str(&format!("fee {reference}: unreadable balance"));
+                    return U128(0);
+                }
+            },
+            Err(_) => {
+                env::log_str(&format!("fee {reference}: balance read failed"));
+                return U128(0);
+            }
+        };
+        if env::storage_has_key(&payment_key(&reference)) {
+            env::log_str(&format!("fee {reference}: already recorded"));
+            return U128(0);
+        }
+        let surplus = balance.saturating_sub(self.liabilities(fee_token.clone()).0);
+        let credited = amount.0.min(surplus);
+        if credited == 0 {
+            env::log_str(&format!("fee {reference}: nothing unowed on the balance, nothing credited"));
+            return U128(0);
+        }
+        self.split_fee(&payer, &token_id, &fee_token, credited);
+        env::storage_write(&payment_key(&reference), &credited.to_le_bytes());
+        env::log_str(&format!("fee {reference}: {credited} of {} credited for {token_id}, paid by {payer}", amount.0));
+        U128(credited)
+    }
+
+    /// The amount credited for a recorded payment, or None if it was never recorded.
+    pub fn fee_payment(&self, reference: String) -> Option<U128> {
+        env::storage_read(&payment_key(&reference)).map(|b| U128(u128::from_le_bytes(b.try_into().unwrap())))
+    }
+
+    /// What the contract owes in `fee_token`: withdrawable balances, bonds, and withdrawals in flight.
+    pub fn liabilities(&self, fee_token: AccountId) -> U128 {
+        U128(read_u128(&liability_key(&fee_token)))
     }
 
     // --- views ---------------------------------------------------------------------------
@@ -644,6 +851,32 @@ impl Contract {
 }
 
 /// Charge the caller for the storage added since `before` out of the attached deposit, refund the rest.
+fn offer_amounts() -> LookupMap<(TokenId, AccountId), u128> {
+    LookupMap::new(StorageKey::Offers)
+}
+
+/// Bidders per script. Each set is stored inside this map, so its length survives between calls.
+fn offer_sets() -> LookupMap<TokenId, IterableSet<AccountId>> {
+    LookupMap::new(StorageKey::OfferSets)
+}
+
+/// Removes `bidder`'s offer on `token_id`: (amount held, yoctoNEAR of storage freed).
+fn take_offer(token_id: &TokenId, bidder: &AccountId) -> (u128, u128) {
+    let key = (token_id.clone(), bidder.clone());
+    let mut amounts = offer_amounts();
+    let amount = amounts.get(&key).copied().unwrap_or_else(|| env::panic_str("no such offer"));
+    let before = env::storage_usage();
+    amounts.remove(&key);
+    amounts.flush();
+    let mut sets = offer_sets();
+    if let Some(set) = sets.get_mut(token_id) {
+        set.remove(bidder);
+    }
+    sets.flush();
+    let freed = env::storage_byte_cost().as_yoctonear() * before.saturating_sub(env::storage_usage()) as u128;
+    (amount, freed)
+}
+
 fn charge_storage(before: u64, payer: &AccountId) {
     let added = env::storage_usage().saturating_sub(before) as u128;
     let cost = env::storage_byte_cost().saturating_mul(added);
@@ -670,6 +903,7 @@ impl FungibleTokenReceiver for Contract {
             let k = bond_key(&m.token_id, &fee_token);
             let cur = read_u128(&k);
             env::storage_write(&k, &(cur + amount.0).to_le_bytes());
+            add_liability(&fee_token, amount.0 as i128);
             return PromiseOrValue::Value(U128(0));
         }
         self.split_fee(&sender_id, &m.token_id, &fee_token, amount.0);
@@ -679,6 +913,31 @@ impl FungibleTokenReceiver for Contract {
 
 fn bond_key(token_id: &str, fee_token: &AccountId) -> Vec<u8> {
     [b"bond:".as_slice(), token_id.as_bytes(), b":", fee_token.as_bytes()].concat()
+}
+
+fn liability_key(fee_token: &AccountId) -> Vec<u8> {
+    [b"owed:".as_slice(), fee_token.as_bytes()].concat()
+}
+
+/// Liabilities live in raw storage, like bonds and fees, so existing deployments need no state
+/// migration. A deployment that already holds balances must start from a fresh contract.
+fn add_liability(fee_token: &AccountId, delta: i128) {
+    let k = liability_key(fee_token);
+    let cur = read_u128(&k) as i128;
+    let next = cur + delta;
+    require!(next >= 0, "liabilities cannot go negative");
+    env::storage_write(&k, &(next as u128).to_le_bytes());
+}
+
+/// Counts withdrawals that have left the contract (see `on_fee_balance`).
+const WITHDRAW_SEQ_KEY: &[u8] = b"wseq";
+
+fn read_u64(key: &[u8]) -> u64 {
+    env::storage_read(key).map(|b| u64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0)
+}
+
+fn payment_key(reference: &str) -> Vec<u8> {
+    [b"paid:".as_slice(), reference.as_bytes()].concat()
 }
 
 fn capital_key(token_id: &str) -> Vec<u8> {
@@ -1319,5 +1578,285 @@ mod tests {
         c.nft_transfer(accounts(3), "trend-sma@v1".into(), None, None);
         assert_eq!(c.bond_status("trend-sma@v1".into()).0, U128(0));
         assert_eq!(c.fee_balance(accounts(2), usdc()).0, MIN_BOND);
+    }
+
+    // --- fees paid by Agent API agents (plain withdraw + record_fee_payment) ------------------
+
+    fn nft() -> AccountId {
+        "nft.testnet".parse().unwrap()
+    }
+
+    /// The callback runs as the contract itself, with the token's `ft_balance_of` answer as its result.
+    fn balance_answer(result: near_sdk::PromiseResult) {
+        testing_env!(
+            VMContextBuilder::new().current_account_id(nft()).predecessor_account_id(nft()).build(),
+            near_sdk::test_vm_config(),
+            near_sdk::RuntimeFeesConfig::test(),
+            Default::default(),
+            vec![result],
+        );
+    }
+
+    fn balance_is(raw: u128) {
+        balance_answer(near_sdk::PromiseResult::Successful(format!("\"{raw}\"").into_bytes()));
+    }
+
+    fn record(c: &mut Contract, payer: AccountId, amount: u128, reference: &str) -> u128 {
+        c.on_fee_balance(payer, "trend-sma@v1".into(), usdc(), U128(amount), reference.into(), read_u64(WITHDRAW_SEQ_KEY)).0
+    }
+
+    #[test]
+    fn a_withdrawal_settling_during_the_check_credits_nothing() {
+        let mut c = setup();
+        pay(&mut c, accounts(4), 52_500_000); // the holder is owed $50
+        // The recorder starts: the balance read sees the $50 still there, plus a new $52.50 payment.
+        let seq_at_call = read_u64(WITHDRAW_SEQ_KEY);
+        // Meanwhile the holder's $50 withdrawal leaves and resolves: liabilities drop by $50.
+        ctx(accounts(2), 0);
+        let _ = c.withdraw_fees(usdc());
+        balance_answer(near_sdk::PromiseResult::Successful(vec![]));
+        assert!(c.resolve_withdraw(accounts(2), usdc(), U128(50_000_000)));
+        // The stale balance would show $50 of "surplus" that is gone: refused, retried later.
+        balance_is(MIN_BOND + 52_500_000 + 52_500_000);
+        let got = c.on_fee_balance(accounts(4), "trend-sma@v1".into(), usdc(), U128(52_500_000), "sha256:02".into(), seq_at_call).0;
+        assert_eq!(got, 0);
+        assert_eq!(c.fee_payment("sha256:02".into()), None);
+        // A fresh read after the withdrawal: only what really arrived is credited.
+        balance_is(MIN_BOND + 2_500_000 + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:02"), 52_500_000);
+    }
+
+    #[test]
+    fn liabilities_follow_bonds_fees_and_withdrawals() {
+        let mut c = setup(); // holder bonded MIN_BOND
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND);
+        pay(&mut c, accounts(4), 52_500_000);
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_500_000);
+        // The holder withdraws fees: still owed until the transfer resolves.
+        ctx(accounts(2), 0);
+        let _ = c.withdraw_fees(usdc());
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_500_000);
+        // It failed: the balance comes back, the liability is not counted twice.
+        balance_answer(near_sdk::PromiseResult::Failed);
+        assert!(!c.resolve_withdraw(accounts(2), usdc(), U128(50_000_000)));
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_500_000);
+        // Second try succeeds: now it is no longer owed.
+        ctx(accounts(2), 0);
+        let _ = c.withdraw_fees(usdc());
+        balance_answer(near_sdk::PromiseResult::Successful(vec![]));
+        assert!(c.resolve_withdraw(accounts(2), usdc(), U128(50_000_000)));
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 2_500_000);
+        // A sale returns the bond to the old holder as a balance: still owed, same total.
+        testing_env!(VMContextBuilder::new().predecessor_account_id(accounts(2)).attached_deposit(NearToken::from_yoctonear(1)).build());
+        c.nft_transfer(accounts(3), "trend-sma@v1".into(), None, None);
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 2_500_000);
+    }
+
+    #[test]
+    fn bond_withdrawal_keeps_liabilities_until_it_leaves() {
+        let mut c = setup();
+        bond(&mut c, accounts(2), 50); // more than the minimum, nobody copies
+        ctx(accounts(2), 0);
+        let _ = c.withdraw_bond("trend-sma@v1".into(), usdc(), U128(50));
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 50);
+        balance_answer(near_sdk::PromiseResult::Successful(vec![]));
+        assert!(c.resolve_withdraw(accounts(2), usdc(), U128(50)));
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the recorder can record payments")]
+    fn only_the_recorder_records_payments() {
+        let mut c = setup();
+        ctx(accounts(4), 0);
+        let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), usdc(), U128(1), "sha256:ab".into());
+    }
+
+    #[test]
+    #[should_panic(expected = "token not accepted for fees")]
+    fn recorded_payments_need_a_fee_token() {
+        let mut c = setup();
+        ctx(accounts(1), 0);
+        let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), accounts(3), U128(1), "sha256:ab".into());
+    }
+
+    #[test]
+    #[should_panic(expected = "reference must be")]
+    fn references_are_printable() {
+        let mut c = setup();
+        ctx(accounts(1), 0);
+        let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), usdc(), U128(1), "has space".into());
+    }
+
+    #[test]
+    fn recorder_starts_a_balance_check() {
+        let mut c = setup();
+        ctx(accounts(1), 0);
+        let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), usdc(), U128(52_500_000), "sha256:01".into());
+        let receipts = near_sdk::test_utils::get_created_receipts();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0].receiver_id, usdc());
+    }
+
+    #[test]
+    fn agent_fee_splits_like_a_direct_payment() {
+        let mut c = setup();
+        // The agent withdrew $52.50 to the contract; the contract already owes the bond.
+        balance_is(MIN_BOND + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 52_500_000);
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
+        assert_eq!(c.fee_balance(accounts(5), usdc()).0, 2_500_000);
+        assert_eq!(c.fees_earned("trend-sma@v1".into(), usdc()).0, 50_000_000);
+        assert_eq!(c.fee_payment("sha256:01".into()), Some(U128(52_500_000)));
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_500_000);
+    }
+
+    #[test]
+    fn a_payment_is_recorded_once() {
+        let mut c = setup();
+        balance_is(MIN_BOND + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 52_500_000);
+        // Same reference again (a retry after a lost answer): nothing more is credited.
+        balance_is(MIN_BOND + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 0);
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
+        ctx(accounts(1), 0);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = c.record_fee_payment(accounts(4), "trend-sma@v1".into(), usdc(), U128(1), "sha256:01".into());
+        }));
+        assert!(r.is_err(), "a recorded reference is refused up front");
+    }
+
+    #[test]
+    fn the_recorder_cannot_credit_money_that_never_arrived() {
+        let mut c = setup();
+        // Only the bond is on the balance: nothing unowed.
+        balance_is(MIN_BOND);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 0);
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 0);
+        assert_eq!(c.fee_payment("sha256:01".into()), None, "can be recorded later, once the money is there");
+        // Part of it arrived (the withdrawal fee came out of the amount): credit only that.
+        balance_is(MIN_BOND + 52_000_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 52_000_000);
+        assert_eq!(c.liabilities(usdc()).0, MIN_BOND + 52_000_000);
+    }
+
+    #[test]
+    fn failed_balance_read_credits_nothing() {
+        let mut c = setup();
+        balance_answer(near_sdk::PromiseResult::Failed);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 0);
+        assert_eq!(c.fee_payment("sha256:01".into()), None);
+    }
+
+    #[test]
+    fn recorded_payer_gets_referral_and_own_script_rules() {
+        let mut c = setup();
+        ctx(accounts(4), 10);
+        c.set_referrer(accounts(1));
+        balance_is(MIN_BOND + 52_500_000);
+        assert_eq!(record(&mut c, accounts(4), 52_500_000, "sha256:01"), 52_500_000);
+        assert_eq!(c.fee_balance(accounts(1), usdc()).0, 1_000_000);
+        assert_eq!(c.fee_balance(accounts(5), usdc()).0, 1_500_000);
+        // The holder's own agent pays only Pilot's 0.25%: $2.50 on $1000 of profit.
+        balance_is(MIN_BOND + 52_500_000 + 2_500_000);
+        assert_eq!(record(&mut c, accounts(2), 2_500_000, "sha256:02"), 2_500_000);
+        assert_eq!(c.fee_balance(accounts(2), usdc()).0, 50_000_000);
+        assert_eq!(c.fee_balance(accounts(5), usdc()).0, 4_000_000);
+    }
+
+    // ------------------------------------------------------------ offers
+
+    const TOKEN: &str = "trend-sma@v1";
+
+    fn offer(c: &mut Contract, who: AccountId, near_milli: u128) -> u128 {
+        ctx(who, near_milli);
+        c.make_offer(TOKEN.into()).0
+    }
+
+    #[test]
+    fn an_offer_holds_the_deposit_minus_storage() {
+        let mut c = setup();
+        let held = offer(&mut c, accounts(3), 2_000); // 2 NEAR
+        let two = NearToken::from_near(2).as_yoctonear();
+        assert!(held < two && held > two - NearToken::from_millinear(10).as_yoctonear(), "held {held}");
+        assert_eq!(c.offers(TOKEN.into(), None, None), vec![(accounts(3), U128(held))]);
+        assert_eq!(c.offer_of(TOKEN.into(), accounts(3)), Some(U128(held)));
+    }
+
+    #[test]
+    fn a_new_offer_replaces_the_old_one() {
+        let mut c = setup();
+        offer(&mut c, accounts(3), 1_000);
+        let second = offer(&mut c, accounts(3), 3_000);
+        // No new storage on the second offer: the whole deposit is the offer.
+        assert_eq!(second, NearToken::from_near(3).as_yoctonear());
+        assert_eq!(c.offers(TOKEN.into(), None, None).len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "you hold this script")]
+    fn the_holder_cannot_offer_on_its_own_script() {
+        let mut c = setup();
+        offer(&mut c, accounts(2), 1_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "attach at least")]
+    fn a_tiny_offer_is_refused() {
+        let mut c = setup();
+        offer(&mut c, accounts(3), 5); // 0.005 NEAR
+    }
+
+    #[test]
+    fn accepting_moves_the_nft_and_clears_the_offer_and_listing() {
+        let mut c = setup();
+        list(&mut c, 9_000_000);
+        let held = offer(&mut c, accounts(3), 1_500);
+        offer(&mut c, accounts(4), 1_000);
+        ctx(accounts(2), 0);
+        c.accept_offer(TOKEN.into(), accounts(3), U128(held));
+        assert_eq!(c.revenue_receiver(TOKEN.into()), Some(accounts(3)));
+        assert_eq!(c.sale_price(TOKEN.into()), None);
+        assert_eq!(c.offer_of(TOKEN.into(), accounts(3)), None);
+        // The other offer stands, now addressed to the new holder.
+        assert_eq!(c.offers(TOKEN.into(), None, None).len(), 1);
+        assert_eq!(c.strategy_info(TOKEN.into()).unwrap().author, accounts(2));
+    }
+
+    #[test]
+    #[should_panic(expected = "the offer changed")]
+    fn accept_checks_the_amount() {
+        let mut c = setup();
+        let held = offer(&mut c, accounts(3), 1_500);
+        ctx(accounts(2), 0);
+        c.accept_offer(TOKEN.into(), accounts(3), U128(held + 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the holder can accept")]
+    fn only_the_holder_accepts() {
+        let mut c = setup();
+        let held = offer(&mut c, accounts(3), 1_500);
+        ctx(accounts(4), 0);
+        c.accept_offer(TOKEN.into(), accounts(3), U128(held));
+    }
+
+    #[test]
+    fn cancel_returns_the_offer() {
+        let mut c = setup();
+        let held = offer(&mut c, accounts(3), 1_000);
+        ctx(accounts(3), 0);
+        assert_eq!(c.cancel_offer(TOKEN.into()).0, held);
+        assert!(c.offers(TOKEN.into(), None, None).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "no such offer")]
+    fn cancel_without_an_offer_fails() {
+        let mut c = setup();
+        ctx(accounts(3), 0);
+        c.cancel_offer(TOKEN.into());
     }
 }

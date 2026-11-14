@@ -51,6 +51,10 @@ const schema = z.object({
 
   NEAR_INTENTS_AGENT_API_URL: z.string().default("https://api.demo.agentsonintents.com"),
   NEAR_INTENTS_AGENT_API_KEY: optional,
+  /**
+   * 1Click partner key (JWT from partners.near-intents.org). The Agent API does not take it: its swap
+   * body has no app-fee or partner field, so Pilot cannot add a spot fee there (see docs/REVENUE.md).
+   */
   NEAR_INTENTS_PARTNER_KEY: optional,
   /** Master switch for real swaps. Off by default: everything runs as paper trading. */
   LIVE_EXECUTION: bool,
@@ -77,8 +81,46 @@ const schema = z.object({
 
   NEAR_ACCOUNT_ID: optional,
   NEAR_PRIVATE_KEY: optional,
-  NEAR_RPC_URL: z.string().default("https://rpc.mainnet.fastnear.com"),
-  STRATEGY_NFT_CONTRACT: optional,
+  /** RPC of the network the strategy NFT contract lives on (testnet today). */
+  NEAR_RPC_URL: z.string().default("https://test.rpc.fastnear.com"),
+  /**
+   * The strategy NFT contract. Defaults to the testnet deployment, so a fresh clone reads real
+   * holders, bonds and copy fees with no setup; set it to an empty string to run without a contract.
+   */
+  STRATEGY_NFT_CONTRACT: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined ? "pilot-nft2-14805.testnet" : v.trim() === "" ? undefined : v.trim())),
+
+  /**
+   * Weekly copy fees (5% of new profit to the NFT holder by default, 0.25% to Pilot). The ledger is
+   * always computed; paper pilots pay from paper USDC. Live pilots send the payment only when this is
+   * on, LIVE_EXECUTION is on, and the owner signed a policy with the fee destination.
+   */
+  FEE_PAYMENTS_ENABLED: bool,
+  /** The fee token as an Agent API asset id; its NEP-141 contract must be a fee token of the NFT contract. */
+  FEE_ASSET_ID: z.string().default("nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"),
+  /** Below this a week's fee is not sent; the profit carries over to the next week (the peak stays). */
+  MIN_FEE_USD: z.coerce.number().min(0).default(1),
+  /**
+   * Who may run a copied script whose holder's bond is below max($100, 1% of copiers' capital):
+   * "live" blocks live pilots and warns paper ones (default), "all" blocks both, "off" only warns.
+   */
+  BOND_GATE: z.enum(["live", "all", "off"]).default("live"),
+  /** Report copiers' capital to the NFT contract weekly (set_copied_capital). An on-chain write: off by default. */
+  NFT_REPORT_COPIED_CAPITAL: bool,
+
+  /** Perps on Hyperliquid TESTNET only (there is no mainnet switch). Off by default. */
+  HL_PERPS_ENABLED: bool,
+  /** API wallet key for the Hyperliquid testnet account: it can trade but cannot withdraw. */
+  HL_TESTNET_PRIVATE_KEY: optional,
+  /** The account the API wallet trades for (its address), when the key is an API wallet. */
+  HL_ACCOUNT_ADDRESS: optional,
+  /** Pilot's builder address; orders then carry a 0.05% builder fee (the account must approve it once). */
+  HL_BUILDER_ADDRESS: optional,
+  HL_MAX_LEVERAGE: z.coerce.number().min(0).max(3).default(1),
+  HL_MAX_ORDER_USD: z.coerce.number().min(1).default(200),
+  HL_SLIPPAGE: z.coerce.number().min(0.001).max(0.05).default(0.01),
 
   HISTORY_API_URL: z.string().default("https://data-api.binance.vision"),
   SCHEDULER_ENABLED: z
@@ -111,7 +153,9 @@ export function describeConfig(c: Config) {
     near_ai: { configured: Boolean(c.NEARAI_API_KEY), model: c.NEARAI_MODEL },
     strategy_engine: c.STRATEGY_ENGINE,
     outlayer: { configured: Boolean(c.OUTLAYER_PAYMENT_KEY && c.OUTLAYER_PROJECT), project: c.OUTLAYER_PROJECT ?? null },
-    nft: { contract: c.STRATEGY_NFT_CONTRACT ?? null, publisher: c.NEAR_ACCOUNT_ID ?? null, can_publish: Boolean(c.STRATEGY_NFT_CONTRACT && c.NEAR_ACCOUNT_ID && c.NEAR_PRIVATE_KEY) },
+    nft: { contract: c.STRATEGY_NFT_CONTRACT ?? null, publisher: c.NEAR_ACCOUNT_ID ?? null, can_publish: Boolean(c.STRATEGY_NFT_CONTRACT && c.NEAR_ACCOUNT_ID && c.NEAR_PRIVATE_KEY), report_copied_capital: c.NFT_REPORT_COPIED_CAPITAL },
+    fees: { payments_enabled: c.FEE_PAYMENTS_ENABLED, asset_id: c.FEE_ASSET_ID, min_fee_usd: c.MIN_FEE_USD, bond_gate: c.BOND_GATE },
+    perps: { enabled: c.HL_PERPS_ENABLED, network: "hyperliquid-testnet", key: Boolean(c.HL_TESTNET_PRIVATE_KEY), builder: c.HL_BUILDER_ADDRESS ?? null },
     scheduler: { enabled: c.SCHEDULER_ENABLED, tick_minutes: c.TICK_MINUTES, review_every_days: c.REVIEW_EVERY_DAYS },
     api_token_required: Boolean(c.PILOT_API_TOKEN),
     live_owners_restricted: Boolean(c.LIVE_OWNERS),

@@ -21,6 +21,8 @@ export const series: Record<string, number[]> = {
 export type Move = {
   id: string; when: string; kind: "swap" | "hold" | "buy" | "review";
   title: string; amount?: string; why: string; rule: string; strategy: string;
+  /** How the decision was computed: "local" or "outlayer", with the start of the strategy WASM's sha256. */
+  run?: string;
 };
 
 export const moves: Move[] = [

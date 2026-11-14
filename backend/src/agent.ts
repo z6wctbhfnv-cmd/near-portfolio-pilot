@@ -16,7 +16,12 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { type Db, json, logEvent, parse } from "./db.js";
 import type { SecretBox } from "./secrets.js";
-import type { TokenInfo } from "./tokens.js";
+import { DEFAULT_UNIVERSE, type TokenInfo } from "./tokens.js";
+
+/** The production Agent API. Its token list is public, like the demo host's. */
+const PROD_AGENT_API = "https://api.agentsonintents.com";
+/** Decimals of the universe assets on NEAR Intents, for the last-resort price source. */
+const FALLBACK_DECIMALS: Record<string, number> = { USDC: 6, USDT: 6, NEAR: 24, BTC: 8, ETH: 18, SOL: 9, ZEC: 8 };
 
 export class ConfigError extends Error {
   readonly code = "not_configured";
@@ -28,7 +33,7 @@ export class AgentGateway {
   private client: AgentApi | null = null;
 
   constructor(
-    private readonly cfg: Pick<Config, "NEAR_INTENTS_AGENT_API_URL" | "NEAR_INTENTS_AGENT_API_KEY">,
+    private readonly cfg: Pick<Config, "NEAR_INTENTS_AGENT_API_URL" | "NEAR_INTENTS_AGENT_API_KEY"> & Partial<Pick<Config, "HISTORY_API_URL">>,
     private readonly db: Db,
     private readonly box: SecretBox,
     private readonly f: typeof fetch = fetch,
@@ -51,10 +56,66 @@ export class AgentGateway {
     return (await res.json()) as T;
   }
 
-  /** GET /v1/tokens: public, no key needed. */
+  /** Where the last token list came from: an Agent API host, or the spot-price fallback. */
+  priceSource: string | null = null;
+
+  /**
+   * The token list with USD prices. GET /v1/tokens is public (no key). If the configured host is
+   * down (the hackathon's demo host is temporary), the production host is asked; if both are down,
+   * spot prices for the universe come from the public market-data API, so paper portfolios, the
+   * site and backtests keep working. Live swaps never run on fallback prices: their readiness check
+   * needs the Agent API itself.
+   */
   async tokens(): Promise<TokenInfo[]> {
-    const body = await this.publicGet<{ data: TokenInfo[] }>("/v1/tokens");
-    return body.data;
+    const errors: string[] = [];
+    const hosts = [...new Set([this.cfg.NEAR_INTENTS_AGENT_API_URL.replace(/\/$/, ""), PROD_AGENT_API])];
+    for (const host of hosts) {
+      try {
+        const res = await this.f(`${host}/v1/tokens`, { signal: AbortSignal.timeout(15_000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = (await res.json()) as { data?: TokenInfo[] };
+        if (!Array.isArray(body.data) || !body.data.length) throw new Error("empty token list");
+        this.priceSource = host;
+        return body.data;
+      } catch (e) {
+        errors.push(`${host}: ${(e as Error).message}`);
+      }
+    }
+    try {
+      const tokens = await this.spotTokens();
+      this.priceSource = "spot prices (fallback)";
+      return tokens;
+    } catch (e) {
+      errors.push(`spot fallback: ${(e as Error).message}`);
+    }
+    throw new Error(`no price source answered: ${errors.join("; ")}`);
+  }
+
+  /** Universe assets priced from public spot tickers; stablecoins count as $1. */
+  private async spotTokens(): Promise<TokenInfo[]> {
+    const base = (this.cfg.HISTORY_API_URL ?? "https://data-api.binance.vision").replace(/\/$/, "");
+    const pairs = DEFAULT_UNIVERSE.filter((a) => a.history_symbol).map((a) => a.history_symbol!);
+    const res = await this.f(`${base}/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(pairs))}`, { signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = (await res.json()) as Array<{ symbol: string; price: string }>;
+    const px = new Map(rows.map((r) => [r.symbol, Number(r.price)]));
+    const now = Date.now();
+    const out: TokenInfo[] = [];
+    for (const a of DEFAULT_UNIVERSE) {
+      const price = a.stable ? 1 : px.get(a.history_symbol!);
+      if (!price || !(price > 0)) continue;
+      out.push({
+        asset_id: a.asset_id,
+        symbol: a.symbol,
+        decimals: FALLBACK_DECIMALS[a.symbol] ?? 18,
+        blockchain: "near",
+        price,
+        price_updated_at: new Date(now).toISOString(),
+        price_expires_at: new Date(now + 600_000).toISOString(),
+      });
+    }
+    if (out.length < 3) throw new Error("spot prices incomplete");
+    return out;
   }
 
   /** GET /v1/network: public dependency status. */

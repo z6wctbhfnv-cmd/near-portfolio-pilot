@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { type Db, json, parse } from "./db.js";
 import type { Mandate } from "./mandate.js";
 import type { StrategyId } from "./strategies.js";
+import type { SwarmConfig, SwarmState } from "./swarm.js";
 
 export type PilotRow = {
   id: string;
@@ -22,6 +23,10 @@ export type PilotRow = {
   next_review_at: number | null;
   /** The drawdown stop measures the peak from here (creation, or the owner's last resume). */
   risk_since: number | null;
+  swarm_json: string | null;
+  swarm_state_json: string | null;
+  following_json: string | null;
+  referrer: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -44,6 +49,10 @@ export function view(r: PilotRow) {
     next_run_at: r.next_run_at,
     next_review_at: r.next_review_at,
     risk_since: r.risk_since,
+    swarm: parse<SwarmConfig | null>(r.swarm_json, null),
+    swarm_state: parse<SwarmState | null>(r.swarm_state_json, null),
+    following: parse<{ token_id: string; strategy_id: string; since: number } | null>(r.following_json ?? null, null),
+    referrer: r.referrer ?? null,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };

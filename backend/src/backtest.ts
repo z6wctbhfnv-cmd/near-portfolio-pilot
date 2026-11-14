@@ -14,6 +14,11 @@ export type BacktestRequest = {
   to: number;
   initial_usd: number;
   cost_bps: number;
+  /** Start from these units instead of `initial_usd` in the stablecoin (metrics still use initial_usd as the start value). */
+  initial_units?: Record<string, number>;
+  initial_state?: unknown;
+  /** Also return every day's return (for period tables), not only the sampled curve. */
+  daily?: boolean;
 };
 
 export type StrategyOutput = {
@@ -86,8 +91,13 @@ export async function backtest(wasm: StrategyWasm, history: PriceHistory, req: B
 
   const cost = req.cost_bps / 10_000;
   const units: Record<string, number> = Object.fromEntries(symbols.map((s) => [s, 0]));
-  units[stable] = req.initial_usd; // start fully in the stablecoin
-  let state: unknown = {};
+  if (req.initial_units) {
+    // Replay from a real position (the daily health check's drift test).
+    for (const s of symbols) units[s] = Math.max(0, req.initial_units[s] ?? 0);
+  } else {
+    units[stable] = req.initial_usd; // start fully in the stablecoin
+  }
+  let state: unknown = req.initial_state ?? {};
   const everyDays = Math.max(1, Math.round(Number(params.every_hours ?? 24) / 24));
   const equity: number[] = [];
   const curve: Array<{ day: string; usd: number }> = [];
@@ -163,5 +173,8 @@ export async function backtest(wasm: StrategyWasm, history: PriceHistory, req: B
     activity: { trades, turnover_usd: Number(turnover.toFixed(2)), fees_usd: Number(fees.toFixed(2)), strategy_errors: errors, last_error: lastError },
     final_units: Object.fromEntries(Object.entries(units).map(([k, v]) => [k, Number(v.toFixed(8))])),
     equity_curve: curve.filter((_, i) => i % step === 0 || i === curve.length - 1),
+    ...(req.daily
+      ? { daily_start: days[0]!, daily_returns: equity.map((e, i) => Number(((i === 0 ? e / req.initial_usd : e / equity[i - 1]!) - 1).toFixed(6))) }
+      : {}),
   };
 }

@@ -157,14 +157,22 @@ export function strategyForMandate(m: Mandate): { id: StrategyId; params: Record
   return { id: "vol_target", params: parseStrategyParams("vol_target", { ...base, weights, target_vol: 0.6, lookback: 30 }) };
 }
 
+/** Where weekly copy fees go: the strategy NFT contract, as a withdraw on chain `near`. */
+export type FeeRoute = { contract: string; assetId: string };
+
 /**
  * Compile a mandate into the complete Agent API policy. Per-asset limits are a second fence
  * behind the USD budget: twice the USD caps at today's price, so normal price moves do not trip
  * them but a runaway agent still stops.
+ *
+ * With `fee`, the policy also allows exactly one way out: a withdraw of the fee asset to the strategy
+ * NFT contract (no memo), which is how the agent pays weekly copy fees. Nothing else can leave.
  */
-export function compilePolicy(m: Mandate, tokens: TokenInfo[]): { policy: Policy; warnings: string[] } {
+export function compilePolicy(m: Mandate, tokens: TokenInfo[], opts: { fee?: FeeRoute } = {}): { policy: Policy; warnings: string[] } {
   const warnings: string[] = [];
-  const symbols = [...new Set([...m.assets, m.stable])];
+  const feeSymbol = opts.fee ? DEFAULT_UNIVERSE.find((a) => a.asset_id === opts.fee!.assetId)?.symbol : undefined;
+  if (opts.fee && !feeSymbol) throw new Error(`fee asset ${opts.fee.assetId} is not in the universe`);
+  const symbols = [...new Set([...m.assets, m.stable, ...(feeSymbol ? [feeSymbol] : [])])];
   const assetIds: string[] = [];
   const perTx: Record<string, string> = {};
   const daily: Record<string, string> = {};
@@ -187,7 +195,7 @@ export function compilePolicy(m: Mandate, tokens: TokenInfo[]): { policy: Policy
   const usd = (v: number | null) => (v === null ? null : v.toFixed(2));
   const policy: Policy = {
     frozen: false,
-    actions: ["swap"],
+    actions: opts.fee ? ["swap", "withdraw"] : ["swap"],
     confidential: false,
     owner_approval: m.owner_approval,
     assets: assetIds,
@@ -196,7 +204,10 @@ export function compilePolicy(m: Mandate, tokens: TokenInfo[]): { policy: Policy
       ...(Object.keys(daily).length ? { daily } : {}),
     },
     max_actions_per_hour: m.max_actions_per_hour,
-    destinations: { mode: "only", list: [] },
+    destinations: {
+      mode: "only",
+      list: opts.fee ? [{ action: "withdraw", chain: "near", address: opts.fee.contract, memo: null }] : [],
+    },
     budget: { daily_usd: usd(m.budget.daily_usd), weekly_usd: usd(m.budget.weekly_usd), monthly_usd: usd(m.budget.monthly_usd) },
     timelock_ms: m.timelock_minutes * 60_000,
     ...(m.schedule

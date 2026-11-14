@@ -10,7 +10,11 @@ import { backtest } from "./backtest.js";
 import { describeConfig } from "./config.js";
 import { json, parse } from "./db.js";
 import { compilePolicy, type Mandate, MandateSchema, parseMandate, strategyForMandate } from "./mandate.js";
+import { copyGate } from "./copying.js";
+import { computeFee, DEFAULT_HOLDER_FEE_BPS, PLATFORM_FEE_BPS, REFERRAL_FEE_BPS } from "./fees.js";
+import { addTask, cancelTask, follow, listTasks, setReferrer, SocialError, tokenGate, unfollow } from "./social.js";
 import { scriptCodeHash } from "./nft.js";
+import { CASH, SwarmConfigSchema, valueOf } from "./swarm.js";
 import { catalog, isStrategyId, parseStrategyParams, STRATEGY_IDS, type StrategyId } from "./strategies.js";
 import { DEFAULT_UNIVERSE, universeBySymbol } from "./tokens.js";
 
@@ -79,7 +83,7 @@ function body<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
 }
 
 export function buildServer(app: App) {
-  const server = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { level: "info" }, bodyLimit: 1_000_000 });
+  const server = Fastify({ logger: process.env.NODE_ENV === "test" ? false : { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: 1_000_000 });
   // Browsers may call from CORS_ORIGINS only (comma-separated); unset = any origin (local development).
   const origins = app.cfg.CORS_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean);
   // PATCH and PUT are needed by the web apps (pause/freeze, change strategy); the default allows only GET, HEAD, POST.
@@ -97,7 +101,7 @@ export function buildServer(app: App) {
   });
 
   server.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, _req, reply) => {
-    if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
+    if (err instanceof HttpError || err instanceof SocialError) return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
     if (err instanceof NotFound) return reply.code(404).send({ error: { code: "not_found", message: err.message } });
     if (err instanceof ConfigError) return reply.code(503).send({ error: { code: "not_configured", message: err.message } });
     if (err instanceof AgentApiError) {
@@ -129,7 +133,7 @@ export function buildServer(app: App) {
   server.get("/v1/network", async () => app.gateway.network());
   server.get("/v1/universe", async () => {
     const u = await app.catalog.universe();
-    return { data: u.map((a) => ({ symbol: a.symbol, asset_id: a.asset_id, stable: a.stable, decimals: a.token?.decimals ?? null, price: a.price, listed: Boolean(a.token) })) };
+    return { source: app.gateway.priceSource, data: u.map((a) => ({ symbol: a.symbol, asset_id: a.asset_id, stable: a.stable, decimals: a.token?.decimals ?? null, price: a.price, listed: Boolean(a.token) })) };
   });
   server.get("/v1/strategies", async () => ({ data: catalog() }));
 
@@ -171,6 +175,7 @@ export function buildServer(app: App) {
         to: z.string().optional(),
         initial_usd: z.number().positive().default(1000),
         cost_bps: z.number().min(0).max(500).default(app.cfg.PAPER_COST_BPS),
+        daily: z.boolean().default(false),
       }),
       req.body,
     );
@@ -178,7 +183,7 @@ export function buildServer(app: App) {
     if (!Number.isFinite(to)) throw new HttpError(400, "validation_failed", "`to` is not a date");
     if (!app.wasm.available()) throw new HttpError(503, "wasm_missing", "strategy WASM is not built: run `npm run build:wasm`");
     try {
-      return await backtest(app.wasm, app.history, { strategy: id, params: b.params, from: to - b.days * DAY, to, initial_usd: b.initial_usd, cost_bps: b.cost_bps });
+      return await backtest(app.wasm, app.history, { strategy: id, params: b.params, from: to - b.days * DAY, to, initial_usd: b.initial_usd, cost_bps: b.cost_bps, daily: b.daily });
     } catch (e) {
       throw new HttpError(400, "backtest_failed", (e as Error).message);
     }
@@ -199,7 +204,7 @@ export function buildServer(app: App) {
 
   async function compileFor(mandate: Mandate) {
     const tokens = await app.catalog.all().catch(() => []);
-    const { policy, warnings } = compilePolicy(mandate, tokens);
+    const { policy, warnings } = compilePolicy(mandate, tokens, app.policyOptions());
     let strategy: { id: StrategyId; params: Record<string, unknown> };
     try {
       strategy = strategyForMandate(mandate);
@@ -254,7 +259,7 @@ export function buildServer(app: App) {
     }
     app.gateway.api(); // fails fast (503 not_configured) before anything is stored
     const tokens = await app.catalog.all();
-    const { policy, warnings } = compilePolicy(mandate, tokens);
+    const { policy, warnings } = compilePolicy(mandate, tokens, app.policyOptions());
     const p = await app.pilots.create({
       name: b.name,
       mode: "live",
@@ -437,7 +442,7 @@ export function buildServer(app: App) {
     if (!mandate) throw new HttpError(400, "validation_failed", "give `text` or `mandate`");
     const current = await app.gateway.api().getPolicy(agentId);
     if (current.revision === null) throw new HttpError(409, "policy_not_ready", "the current policy has no revision yet");
-    const { policy, warnings } = compilePolicy(mandate, await app.catalog.all());
+    const { policy, warnings } = compilePolicy(mandate, await app.catalog.all(), app.policyOptions());
     const generated = await app.gateway.generate(
       { type: "policy_update", agent_id: agentId, policy, expected_revision: current.revision } as GenerateIntentRequest,
       pilot.id,
@@ -505,6 +510,172 @@ export function buildServer(app: App) {
     const tokenId = await app.nft.tokenByCodeHash(codeHash).catch(() => null);
     const onChain = tokenId ? await app.nft.history(tokenId).catch((e: Error) => ({ error: e.message })) : null;
     return { code_hash: codeHash, token_id: tokenId, contract: app.nft.contract, on_chain: onChain, local_runs: local };
+  });
+
+  // ------------------------------------------------------------ copy fees, bond, health, swarm, perps
+
+  server.get("/v1/pilots/:id/fees", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const rows = await app.fees.list(p.id);
+    return {
+      terms: {
+        holder_bps_default: DEFAULT_HOLDER_FEE_BPS,
+        platform_bps: PLATFORM_FEE_BPS,
+        referral_bps_of_platform: REFERRAL_FEE_BPS,
+        payments_enabled: app.cfg.FEE_PAYMENTS_ENABLED,
+        fee_asset_id: app.cfg.FEE_ASSET_ID,
+        destination: app.fees.destination(),
+        min_fee_usd: app.cfg.MIN_FEE_USD,
+      },
+      peaks: await app.fees.peaks(p.id),
+      following: p.following,
+      estimate: await feeEstimate(p),
+      data: rows.map((r) => ({ ...r, request: parse(r.request_json, null), quote: parse(r.quote_json, null), response: parse(r.response_json, null), request_json: undefined, quote_json: undefined, response_json: undefined })),
+    };
+  });
+
+  server.post("/v1/pilots/:id/fees/settle", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    return app.fees.settle(p.id);
+  });
+
+  server.post("/v1/fees/:id/refresh", async (req) => {
+    const r = await app.fees.refresh((req.params as { id: string }).id);
+    if (!r) throw new NotFound("fee payment not found");
+    return r;
+  });
+
+  // Whether the pilot's script(s) may be copied right now: the holder's bond against what is required.
+  server.get("/v1/pilots/:id/copy-gate", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const wasmSha = app.wasm.available() ? app.wasm.wasmSha256 : null;
+    const ids = p.swarm?.scripts.length ? [...new Set(p.swarm.scripts.map((s) => s.id))] : [p.strategy.id];
+    const gates = await Promise.all(ids.map(async (id) => ({ strategy: id, ...(await copyGate(app.db, app.nft, p.owner, id, wasmSha)) })));
+    return { bond_gate: app.cfg.BOND_GATE, data: gates };
+  });
+
+  server.get("/v1/pilots/:id/health", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    return { latest: await app.health.latest(p.id), data: await app.health.list(p.id) };
+  });
+
+  server.post("/v1/pilots/:id/health/check", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    return app.health.check(p.id, { force: true });
+  });
+
+  server.post("/v1/health/:id/answer", async (req) => {
+    const b = body(z.object({ answer: z.enum(["pause", "keep"]) }), req.body);
+    let r;
+    try {
+      r = await app.health.answer((req.params as { id: string }).id, b.answer);
+    } catch (e) {
+      throw new HttpError(409, "bad_state", (e as Error).message);
+    }
+    if (!r) throw new NotFound("health check not found");
+    return r;
+  });
+
+  server.get("/v1/pilots/:id/swarm", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    if (!p.swarm) return { swarm: null, state: null };
+    const u = await app.catalog.universe();
+    const px = Object.fromEntries(u.filter((a) => a.price).map((a) => [a.symbol, a.price!]));
+    const sleeves = Object.entries(p.swarm_state?.sleeves ?? {}).map(([key, s]) => ({ key, cash: key === CASH, share: p.swarm_state?.alloc[key] ?? null, value_usd: Number(valueOf(s.units, px).toFixed(2)), units: s.units }));
+    return { swarm: p.swarm, state: p.swarm_state ? { alloc: p.swarm_state.alloc, alloc_at: p.swarm_state.alloc_at, alloc_reason: p.swarm_state.alloc_reason, sleeves } : null };
+  });
+
+  // Follow several scripts at once: the main agent splits the capital and nets their trades.
+  server.put("/v1/pilots/:id/swarm", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const cfg = body(SwarmConfigSchema, req.body);
+    const stable = String(p.strategy.params.stable ?? "USDC");
+    try {
+      for (const s of cfg.scripts) s.params = parseStrategyParams(s.id, { stable, ...s.params });
+    } catch (e) {
+      throw new HttpError(400, "validation_failed", (e as Error).message);
+    }
+    if (p.mode === "live" && p.policy && (p.policy as { assets: string[] | "any" }).assets !== "any") {
+      const allowed = new Set((p.policy as { assets: string[] }).assets);
+      const outside = [...new Set(cfg.scripts.flatMap((s) => Object.keys((s.id === "dca" ? s.params.buy : s.params.weights) as Record<string, number>)))].filter((sym) => !allowed.has(universeBySymbol(sym)?.asset_id ?? ""));
+      if (outside.length) throw new HttpError(409, "outside_policy", `the signed policy does not allow ${outside.join(", ")}; update the policy first`);
+    }
+    return { pilot: await app.pilots.update(p.id, { swarm_json: json(cfg)! }) };
+  });
+
+  server.delete("/v1/pilots/:id/swarm", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    return { pilot: await app.pilots.update(p.id, { swarm_json: null, swarm_state_json: null }) };
+  });
+
+  // ------------------------------------------------------------ copying, referrer, price tasks
+
+  /** This week so far: profit above the peak and the fee it would carry (an estimate, not a charge). */
+  async function feeEstimate(p: NonNullable<Awaited<ReturnType<typeof app.pilots.get>>>) {
+    const since = p.following?.since ?? p.created_at;
+    const first = await app.db.prepare("SELECT total_usd FROM snapshots WHERE pilot_id = ? AND ts >= ? ORDER BY ts LIMIT 1").get<{ total_usd: number }>(p.id, since);
+    const last = await app.db.prepare("SELECT total_usd FROM snapshots WHERE pilot_id = ? ORDER BY ts DESC LIMIT 1").get<{ total_usd: number }>(p.id);
+    if (!first || !last) return null;
+    const peaks = await app.fees.peaks(p.id);
+    const hwm = Math.max(first.total_usd, ...peaks.map((x) => Number((x as { hwm_usd?: number }).hwm_usd ?? 0)));
+    let holderBps = DEFAULT_HOLDER_FEE_BPS;
+    if (p.following && app.nft.contract) holderBps = await app.nft.copyFeeBps(p.following.token_id).catch(() => DEFAULT_HOLDER_FEE_BPS);
+    const c = computeFee({ equity: last.total_usd, hwm, deposits: 0, holderBps, payerIsHolder: !p.following });
+    return { equity_usd: last.total_usd, peak_usd: hwm, ...c };
+  }
+
+  server.post("/v1/pilots/:id/follow", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const b = body(z.object({ token_id: z.string().min(1).max(128) }), req.body);
+    return follow(app, p, b.token_id);
+  });
+
+  server.post("/v1/pilots/:id/unfollow", async (req) => unfollow(app, await pilotOr404((req.params as { id: string }).id)));
+
+  // Bond gate for any script NFT, for the leaderboard (no pilot needed).
+  server.get("/v1/scripts/:token/gate", async (req) => tokenGate(app, null, (req.params as { token: string }).token));
+
+  server.post("/v1/pilots/:id/referrer", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const b = body(z.object({ referrer: z.string().min(2).max(64) }), req.body);
+    return setReferrer(app, p, b.referrer);
+  });
+
+  server.get("/v1/pilots/:id/tasks", async (req) => ({ data: await listTasks(app, (await pilotOr404((req.params as { id: string }).id)).id) }));
+
+  server.post("/v1/pilots/:id/tasks", async (req, reply) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const b = body(
+      z.object({
+        asset: z.string().min(2).max(10),
+        op: z.enum(["<", ">"]),
+        price: z.number().positive(),
+        side: z.enum(["buy", "sell"]),
+        usd: z.number().positive().max(1_000_000),
+        text: z.string().max(300).optional(),
+      }),
+      req.body,
+    );
+    return reply.code(201).send(await addTask(app, p, b));
+  });
+
+  server.delete("/v1/pilots/:id/tasks/:task", async (req) => {
+    const { id, task } = req.params as { id: string; task: string };
+    const t = await cancelTask(app, (await pilotOr404(id)).id, task);
+    if (!t) throw new NotFound("task not found");
+    return t;
+  });
+
+  server.get("/v1/pilots/:id/perps", async (req) => {
+    const p = await pilotOr404((req.params as { id: string }).id);
+    const rows = app.perps ? await app.perps.list(p.id) : [];
+    return { enabled: app.cfg.HL_PERPS_ENABLED, network: "hyperliquid-testnet", data: rows.map((r) => ({ ...r, request: parse(r.request_json, null), response: parse(r.response_json, null), request_json: undefined, response_json: undefined })) };
+  });
+
+  // Read-only: the Hyperliquid testnet account the perp executor trades for.
+  server.get("/v1/perps/account", async () => {
+    if (!app.hl.user) throw new HttpError(503, "not_configured", "HL_TESTNET_PRIVATE_KEY or HL_ACCOUNT_ADDRESS is not set");
+    return { network: "hyperliquid-testnet", user: app.hl.user, builder: app.hl.builder, ...(await app.hl.account()) };
   });
 
   return server;

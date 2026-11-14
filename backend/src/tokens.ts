@@ -75,17 +75,47 @@ export function atomicToNumber(raw: bigint | string, decimals: number): number {
 /** In-memory cache of GET /v1/tokens (public endpoint). */
 export class TokenCatalog {
   private cache: { at: number; tokens: TokenInfo[] } | null = null;
+  private refreshing: Promise<TokenInfo[]> | null = null;
 
   constructor(
     private readonly fetchTokens: () => Promise<TokenInfo[]>,
     private readonly ttlMs = 60_000,
+    /** Up to this age a list is still served at once while a refresh runs behind it. */
+    private readonly staleMs = 5 * 60_000,
   ) {}
 
+  /** One refresh at a time, shared by everyone waiting for it. */
+  private refresh(): Promise<TokenInfo[]> {
+    this.refreshing ??= this.fetchTokens()
+      .then((tokens) => {
+        this.cache = { at: Date.now(), tokens };
+        return tokens;
+      })
+      .finally(() => {
+        this.refreshing = null;
+      });
+    return this.refreshing;
+  }
+
+  /**
+   * The token list. Younger than `ttlMs`: from memory. Older but under `staleMs`: from memory at
+   * once, refreshed in the background, so a page or a run never waits on the price source. Older
+   * still, or `force`: fetched now. Live swaps do not rely on these prices: each is quoted first.
+   */
   async all(force = false): Promise<TokenInfo[]> {
-    if (!force && this.cache && Date.now() - this.cache.at < this.ttlMs) return this.cache.tokens;
-    const tokens = await this.fetchTokens();
-    this.cache = { at: Date.now(), tokens };
-    return tokens;
+    const age = this.cache ? Date.now() - this.cache.at : Infinity;
+    if (!force && this.cache && age < this.ttlMs) return this.cache.tokens;
+    if (!force && this.cache && age < this.staleMs) {
+      void this.refresh().catch(() => undefined);
+      return this.cache.tokens;
+    }
+    try {
+      return await this.refresh();
+    } catch (e) {
+      // Every source failed: a list up to an hour old beats no prices at all (entries carry their own expiry).
+      if (this.cache && age < 3_600_000) return this.cache.tokens;
+      throw e;
+    }
   }
 
   async get(assetId: string): Promise<TokenInfo | undefined> {

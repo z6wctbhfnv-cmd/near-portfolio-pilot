@@ -9,6 +9,7 @@ import { WalletButton } from "./WalletButton";
 const links = [
   { href: "/dashboard", label: "Portfolio" },
   { href: "/strategies", label: "Strategies" },
+  { href: "/leaderboard", label: "Leaderboard" },
   { href: "/start", label: "Rules" },
 ];
 
@@ -24,7 +25,7 @@ export function Nav() {
   return (
     <header className={`sticky top-0 z-40 transition-colors duration-300 ${light ? "bg-yel" : "bg-bg/85 backdrop-blur-xl"}`}>
       <div className="mx-auto flex h-[72px] max-w-[1200px] items-center justify-between gap-4 px-4 sm:px-6">
-        <Link href="/" aria-label="dolya home"><Logo light={light} /></Link>
+        <Link href="/" aria-label="dolya home" className="shrink-0"><Logo light={light} /></Link>
         <nav className={`hidden items-center gap-1 rounded-[16px] p-1 md:flex ${light ? "bg-white/15" : "bg-card2"}`}>
           {links.map((l) => {
             const active = path.startsWith(l.href);

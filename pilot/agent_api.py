@@ -137,22 +137,15 @@ class AgentApi:
 
     def swap(self, agent_id: str, grant: str, origin: str, destination: str, amount_atomic: str, *,
              min_amount_out: str | None = None, confidential: bool = True, dry: bool = True,
-             idempotency_key: str | None = None, app_fee_bps: int | None = None,
-             fee_recipient: str | None = None) -> dict:
+             idempotency_key: str | None = None) -> dict:
         """dry=True (default) returns a quote and the budget check without moving funds.
 
-        Pilot's spot fee (0.10%) follows the 1Click `appFees` model: with a partner key, the submitted fee
-        is split with 1Click, which keeps at least 20 bps, so 30 bps total leaves 10 bps to Pilot. The field
-        is sent only when a recipient is configured. NOTE: confirm the Agent API field name against its
-        spec once the partner key is issued (it mirrors 1Click `appFees`).
+        No partner spot fee: the Agent API's swap body is closed (`additionalProperties: false`) and has
+        no app-fee field; 1Click's own app fee is applied by the API itself, not by the partner. So Pilot
+        earns nothing per swap here (see docs/REVENUE.md); its revenue is the weekly fee on new profit.
         """
         body = {"origin_asset": origin, "destination_asset": destination, "amount": amount_atomic,
                 "confidential": confidential, "dry": dry}
-        recipient = fee_recipient or os.environ.get("PILOT_FEE_RECIPIENT")
-        if recipient and app_fee_bps:
-            if not 0 < app_fee_bps <= 500:
-                raise ValueError("app fee must be 1..500 bps")
-            body["app_fees"] = [{"recipient": recipient, "fee": int(app_fee_bps)}]
         if min_amount_out is not None:
             body["min_amount_out"] = min_amount_out
         return self._req("POST", f"/v1/agents/{agent_id}/swap", body, grant=grant,

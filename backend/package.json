@@ -15,13 +15,16 @@
     "fetch-history": "tsx src/cli/fetch-history.ts",
     "smoke": "tsx src/cli/smoke.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "tour": "tsx src/cli/tour.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {
     "@fastify/cors": "^11.4.1",
     "@libsql/client": "^0.15.15",
     "@near-intents-agent-api/sdk": "^0.8.2",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "fastify": "^5.12.8",
     "near-api-js": "^7.5.3",
     "zod": "^4.6.7"

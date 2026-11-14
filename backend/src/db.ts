@@ -138,6 +138,104 @@ CREATE TABLE IF NOT EXISTS nft_checkpoints (
   PRIMARY KEY (code_hash, period_end_ms)
 );
 
+-- Weekly copy-fee ledger: one row per pilot, script NFT and week. Payments follow the swap rules:
+-- the key is stored before the request, retries replay it, and nothing is charged twice.
+CREATE TABLE IF NOT EXISTS fee_ledger (
+  id TEXT PRIMARY KEY,
+  pilot_id TEXT NOT NULL,
+  token_id TEXT NOT NULL,
+  period_end_ms INTEGER NOT NULL,
+  kind TEXT NOT NULL,                 -- paper | live
+  payer TEXT,                         -- owner's NEAR account (referrals, own script), else the agent
+  holder TEXT,
+  payer_is_holder INTEGER NOT NULL DEFAULT 0,
+  equity_usd REAL NOT NULL,
+  hwm_usd REAL NOT NULL,              -- the peak before this week, deposits added
+  deposits_usd REAL NOT NULL DEFAULT 0,
+  profit_usd REAL NOT NULL,
+  holder_bps INTEGER NOT NULL,
+  payment_bps INTEGER NOT NULL,
+  fee_usd REAL NOT NULL,
+  amount_atomic TEXT,
+  hwm_after_usd REAL,                 -- the new peak once the week is final
+  idempotency_key TEXT NOT NULL UNIQUE,
+  reference TEXT NOT NULL,
+  request_json TEXT,
+  quote_json TEXT,
+  status TEXT NOT NULL,               -- no_profit | carried | blocked | paper_paid | prepared | refused | sent | <Agent API status>
+  correlation_id TEXT,
+  response_json TEXT,
+  error_code TEXT,
+  error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  record_status TEXT,                 -- live only: pending | recorded (the NFT contract credited the split)
+  credited_atomic TEXT,
+  record_tx TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (pilot_id, token_id, period_end_ms)
+);
+CREATE INDEX IF NOT EXISTS fee_ledger_pilot ON fee_ledger(pilot_id, period_end_ms);
+
+-- The fee peak (high-water mark) per pilot and script, measured after fees as paid.
+CREATE TABLE IF NOT EXISTS fee_hwm (
+  pilot_id TEXT NOT NULL,
+  token_id TEXT NOT NULL,
+  hwm_usd REAL NOT NULL,
+  since_ms INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (pilot_id, token_id)
+);
+
+-- Daily script health check: findings, and the owner's answer to "Pause / Keep running".
+CREATE TABLE IF NOT EXISTS health_checks (
+  id TEXT PRIMARY KEY,
+  pilot_id TEXT NOT NULL,
+  day INTEGER NOT NULL,               -- unix ms at 00:00 UTC
+  status TEXT NOT NULL,               -- ok | warn | stop
+  findings_json TEXT NOT NULL,
+  question_json TEXT,                 -- null when there is nothing to ask
+  answer TEXT,                        -- pause | keep
+  answered_at INTEGER,
+  created_at INTEGER NOT NULL,
+  UNIQUE (pilot_id, day)
+);
+
+-- Hyperliquid testnet orders. The client order id (cloid) is stored before sending, so a lost answer
+-- is looked up by cloid instead of sending a second order.
+CREATE TABLE IF NOT EXISTS perp_orders (
+  id TEXT PRIMARY KEY,
+  pilot_id TEXT NOT NULL,
+  run_id TEXT,
+  cloid TEXT NOT NULL UNIQUE,
+  coin TEXT NOT NULL,
+  usd REAL NOT NULL,                  -- signed: > 0 buys, < 0 sells
+  request_json TEXT NOT NULL,
+  status TEXT NOT NULL,               -- blocked | prepared | sent | filled | resting | error | unknown
+  response_json TEXT,
+  error_code TEXT,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  pilot_id TEXT NOT NULL,
+  asset TEXT NOT NULL,
+  op TEXT NOT NULL,                   -- "<" | ">"
+  price REAL NOT NULL,
+  side TEXT NOT NULL,                 -- buy | sell
+  usd REAL NOT NULL,
+  status TEXT NOT NULL,               -- active | done | failed | cancelled
+  text TEXT,
+  fired_at INTEGER,
+  fired_price REAL,
+  result_json TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tasks_pilot ON tasks(pilot_id, status);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   pilot_id TEXT,
@@ -159,7 +257,16 @@ export class Db {
       if (local) await client.execute("PRAGMA foreign_keys = ON");
       await client.executeMultiple(SCHEMA);
       // Columns added after the first release: add them to databases created before.
-      for (const sql of ["ALTER TABLE pilots ADD COLUMN risk_since INTEGER"]) {
+      for (const sql of [
+        "ALTER TABLE pilots ADD COLUMN risk_since INTEGER",
+        // A swarm pilot follows several scripts at once (see swarm.ts); null = one strategy.
+        "ALTER TABLE pilots ADD COLUMN swarm_json TEXT",
+        "ALTER TABLE pilots ADD COLUMN swarm_state_json TEXT",
+        // Copying a script NFT (social.ts): {token_id, strategy_id, since}; null = the pilot's own strategy.
+        "ALTER TABLE pilots ADD COLUMN following_json TEXT",
+        // Who referred this owner (NEAR account), recorded on chain by the agent once live.
+        "ALTER TABLE pilots ADD COLUMN referrer TEXT",
+      ]) {
         try {
           await client.execute(sql);
         } catch {

@@ -61,14 +61,13 @@ def test_swap_defaults_to_dry_run(monkeypatch):
     assert seen["kw"]["grant"] == "ngt_x" and seen["kw"]["idempotency_key"].startswith("swap-")
 
 
-def test_app_fee_is_sent_only_when_configured(monkeypatch):
+def test_swap_never_sends_an_app_fee(monkeypatch):
+    # The Agent API swap body is closed (additionalProperties: false) and has no app-fee field: a partner
+    # field would be refused with validation_failed. See docs/REVENUE.md.
     from pilot import agent_api
     sent = {}
     c = agent_api.AgentApi.__new__(agent_api.AgentApi)
     monkeypatch.setattr(c, "_req", lambda m, path, body=None, **kw: sent.setdefault("body", body) or {})
-    monkeypatch.delenv("PILOT_FEE_RECIPIENT", raising=False)
+    monkeypatch.setenv("PILOT_FEE_RECIPIENT", "pilot.near")
     c.swap("a", "g", "x", "y", "1")
-    assert "app_fees" not in sent["body"]
-    sent.clear()
-    c.swap("a", "g", "x", "y", "1", app_fee_bps=30, fee_recipient="pilot.near")
-    assert sent["body"]["app_fees"] == [{"recipient": "pilot.near", "fee": 30}]
+    assert set(sent["body"]) == {"origin_asset", "destination_asset", "amount", "confidential", "dry"}

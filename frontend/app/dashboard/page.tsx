@@ -6,32 +6,54 @@ import { Action, AssetRow, Chart, MoveDetail, MoveRow, Sheet } from "@/component
 import { useWallet } from "@/components/wallet";
 import { usePilot } from "@/lib/usePilot";
 import { usd, type Move } from "@/lib/demo";
+import { TasksCard } from "@/components/TasksCard";
+import { OwnerPanel } from "@/components/OwnerPanel";
+import { CopyingCard, FeesCard, HealthCard, SwarmCard } from "@/components/PilotCards";
 
 const STRAT: Record<string, string> = { rebalance: "Constant mix", trend: "Trend filter", vol_target: "Volatility target", dca: "Weekly buys" };
 
 export default function Dashboard() {
   const [open, setOpen] = useState<Move | null>(null);
   const [tab, setTab] = useState<"assets" | "mix">("assets");
+  const [freezeAsk, setFreezeAsk] = useState(false);
   const { accountId, connect } = useWallet();
-  const { view, error, busy, runNow, togglePause, reviewNow, toggleStop } = usePilot();
+  const { view, loading, error, busy, runNow, togglePause, reviewNow, toggleStop, reload, startPaper } = usePilot();
   const { pilot, total, holdings, moves, series, reviews, paused, live } = view;
   const m = pilot?.mandate;
   const rules = m
     ? [m.budget.weekly_usd && `Max $${m.budget.weekly_usd} a week`, m.budget.daily_usd && `Max $${m.budget.daily_usd} a day`, m.max_trade_usd && `Trades up to $${m.max_trade_usd}`, `${[...m.assets, m.stable].join(", ")} only`, m.drawdown_stop?.enabled === false ? "No safety stop" : `Cash out at −${Math.round((m.drawdown_stop?.max_drawdown ?? 0.2) * 100)}%`, "Your wallet only", "Freeze any time"].filter(Boolean) as string[]
-    : ["Max $150 a week", "NEAR at 30% ± 4", "Act past 5% drift", "Cash out at −20%", "Your wallet only", "Freeze any time"];
+    : [];
   const review = reviews[0];
 
   return (
     <main className="mx-auto max-w-[1200px] px-4 pb-16 pt-6 sm:px-6">
-      {!live && (
-        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-          className="mb-4 flex flex-col gap-3 rounded-[22px] bg-card2 p-4 sm:flex-row sm:items-center">
-          <img src="/3d/sparkle.png" alt="" className="h-12 w-12 shrink-0" />
-          <p className="flex-1 text-[16px]"><b>This is a demo portfolio.</b> Set your rules to start your own pilot with paper money.{error ? <span className="block text-[13px] text-dim">Backend: {error}</span> : null}</p>
-          <Link href="/start" className="btn btn-yel !h-11 shrink-0 !text-[15px]">Set my rules</Link>
+      {loading && (
+        <div className="grid min-h-[50vh] place-items-center" role="status" aria-live="polite">
+          <div className="flex flex-col items-center gap-3 text-dim">
+            <motion.img src="/3d/segment.png" alt="" className="h-20 w-20" animate={{ rotate: [0, 12, -8, 0] }} transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }} />
+            <p className="text-[16px]">Loading your portfolio…</p>
+          </div>
+        </div>
+      )}
+
+      {!live && !loading && (
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="card relative mx-auto max-w-[720px] overflow-hidden p-8 sm:p-10">
+          <img src="/3d/segment.png" alt="" className="absolute -right-4 -top-4 h-24 w-24 opacity-90 sm:-right-6 sm:-top-6 sm:h-40 sm:w-40" />
+          <p className="text-[15px] font-semibold text-yel">Portfolio</p>
+          <h1 className="display mt-2 max-w-[16ch] pr-16 text-[clamp(1.8rem,6vw,2.6rem)] sm:pr-0">No portfolio yet</h1>
+          <p className="mt-3 max-w-[40ch] text-[17px] leading-snug text-dim">Start with paper money to see how dolya works: real prices, real strategy runs, a reason for every move, and nothing at risk.</p>
+          {error && <p className="mt-3 rounded-[14px] bg-[#fdecea] px-3 py-2 text-[14px] text-down" role="alert">{error}</p>}
+          <div className="mt-6 flex flex-wrap gap-3">
+            <motion.button whileTap={{ scale: 0.97 }} onClick={startPaper} disabled={busy === "start"} className="btn btn-yel !h-auto min-h-[56px] w-full py-3 text-center sm:w-auto disabled:opacity-60">
+              {busy === "start" ? "Starting…" : "Start with $1,000 of paper money"}
+            </motion.button>
+            <Link href="/start" className="btn btn-gray !h-auto min-h-[56px] w-full py-3 text-center sm:w-auto">Write my own rules</Link>
+          </div>
+          <p className="mt-4 text-[13px] text-dim">Paper money only. Connect a wallet and sign your rules when you want to go live.</p>
         </motion.div>
       )}
 
+      {live && (<>
       <AnimatePresence>
         {paused && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
@@ -51,12 +73,12 @@ export default function Dashboard() {
               ? <p className="truncate text-[20px] font-semibold text-ink">{accountId}</p>
               : <button onClick={connect} className="text-[20px] font-semibold text-ink underline decoration-yel decoration-2 underline-offset-4 hover:text-yel">Connect wallet</button>}
             <motion.p key={total} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="display num mt-3 text-[clamp(2.4rem,9vw,3.5rem)]">{usd(Math.round(total * 100) / 100)}</motion.p>
-            <p className="mt-1 text-[16px] text-dim">{live ? `${pilot?.mode === "live" ? "Live" : "Paper"} pilot · ${STRAT[pilot!.strategy.id] ?? pilot!.strategy.id}` : <><span className="num font-semibold text-up">+$412 · 3.9%</span> this month</>}</p>
+            <p className="mt-1 text-[16px] text-dim">{`${pilot?.mode === "live" ? "Live" : "Paper"} pilot · ${pilot?.swarm ? `${pilot.swarm.scripts.length} scripts` : pilot?.following ? `copying ${pilot.following.token_id}` : STRAT[pilot!.strategy.id] ?? pilot!.strategy.id}`}</p>
             <div className="mt-6 grid grid-cols-4 sm:max-w-[420px]">
               <Action icon={busy === "run" ? "…" : "▶"} label="Run now" active onClick={live ? runNow : undefined} />
               <Action icon="⇄" label="Strategy" onClick={() => location.assign("/strategies")} />
               <Action icon="≡" label="Rules" onClick={() => location.assign("/start")} />
-              <Action icon="❄" label={paused ? "Resume" : "Freeze"} onClick={live ? togglePause : undefined} />
+              <Action icon="❄" label={paused ? "Resume" : "Freeze"} onClick={live ? () => { togglePause(); if (!paused && pilot?.mode === "live") setFreezeAsk(true); } : undefined} />
             </div>
             {live && error && <p className="mt-4 rounded-[14px] bg-[#fdecea] px-3 py-2 text-[14px] text-down" role="alert">{error}</p>}
           </div>
@@ -119,10 +141,12 @@ export default function Dashboard() {
             )}
           </div>
 
+          {live && pilot?.mode === "live" && <OwnerPanel pilot={pilot} freezeAsk={freezeAsk} onFreezeAsked={() => setFreezeAsk(false)} />}
+
           <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} whileHover="hover" className="card relative overflow-hidden p-6">
             <p className="text-[14px] text-dim">Running strategy</p>
-            <p className="display mt-2 pr-28 text-[24px]">{pilot ? STRAT[pilot.strategy.id] ?? pilot.strategy.id : "Calm Rebalance"}</p>
-            <p className="mt-1 max-w-[24ch] text-[15px] text-dim">{pilot ? `Next run ${new Date(pilot.next_run_at).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "Next check in 6 hours. 412 verified runs."}</p>
+            <p className="display mt-2 pr-28 text-[24px]">{pilot ? STRAT[pilot.strategy.id] ?? pilot.strategy.id : ""}</p>
+            <p className="mt-1 max-w-[24ch] text-[15px] text-dim">{pilot ? `Next run ${new Date(pilot.next_run_at).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : ""}</p>
             <Link href="/strategies" className="mt-4 inline-flex items-center gap-1 text-[15px] font-semibold text-yel">Change strategy <span>→</span></Link>
             <motion.img src="/3d/balance.png" alt="" className="absolute -bottom-3 -right-2 h-32 w-32" variants={{ hover: { rotate: -8, scale: 1.08 } }} transition={{ type: "spring", stiffness: 260, damping: 12 }} />
           </motion.div>
@@ -164,8 +188,15 @@ export default function Dashboard() {
               </motion.button>
             )}
           </motion.div>
+
+          <TasksCard pilotId={live ? pilot?.id ?? null : null} onChanged={reload} />
+          {pilot && <HealthCard pilot={pilot} onChanged={reload} />}
+          {pilot && <CopyingCard pilot={pilot} onChanged={reload} />}
+          {pilot && <FeesCard pilot={pilot} />}
+          {pilot && <SwarmCard pilot={pilot} onChanged={reload} />}
         </div>
       </div>
+      </>)}
       <Sheet open={!!open} onClose={() => setOpen(null)}>{open && <MoveDetail m={open} />}</Sheet>
     </main>
   );

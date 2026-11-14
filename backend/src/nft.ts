@@ -13,6 +13,7 @@
  */
 import { createHash } from "node:crypto";
 import { Account, type KeyPairString } from "near-api-js";
+import { copiedCapitalUsd } from "./copying.js";
 import type { Db } from "./db.js";
 import { logEvent } from "./db.js";
 
@@ -57,30 +58,46 @@ export class NftPublisher {
     return this.account;
   }
 
-  /** Read-only contract view over JSON-RPC. */
+  /**
+   * Read-only contract view over JSON-RPC. Public RPC endpoints rate-limit bursts and drop a
+   * connection now and then, so a failed transport is retried, alternating with a second public
+   * endpoint of the same network. An answer from the chain (a value, or a contract error such as
+   * "method not found") is final.
+   */
   async view<T>(method: string, args: Record<string, unknown> = {}): Promise<T> {
     if (!this.opts.contract) throw new Error("STRATEGY_NFT_CONTRACT is not set");
     const f = this.opts.fetch ?? fetch;
-    const res = await f(this.opts.rpcUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "pilot",
-        method: "query",
-        params: {
-          request_type: "call_function",
-          finality: "final",
-          account_id: this.opts.contract,
-          method_name: method,
-          args_base64: Buffer.from(JSON.stringify(args)).toString("base64"),
-        },
-      }),
-      signal: AbortSignal.timeout(20_000),
+    const payload = JSON.stringify({
+      jsonrpc: "2.0",
+      id: "pilot",
+      method: "query",
+      params: {
+        request_type: "call_function",
+        finality: "final",
+        account_id: this.opts.contract,
+        method_name: method,
+        args_base64: Buffer.from(JSON.stringify(args)).toString("base64"),
+      },
     });
-    const body = (await res.json()) as { result?: { result?: number[] }; error?: unknown };
-    if (!body.result?.result) throw new Error(`view ${method} failed: ${JSON.stringify(body.error ?? body).slice(0, 300)}`);
-    return JSON.parse(Buffer.from(body.result.result).toString("utf8")) as T;
+    const second = this.opts.contract.endsWith(".testnet") ? "https://rpc.testnet.near.org" : "https://rpc.mainnet.near.org";
+    // The second endpoint is used only next to a known public one, never next to a private or test RPC.
+    const urls = /(^|\.)(fastnear\.com|near\.org)$/.test(new URL(this.opts.rpcUrl).hostname) && this.opts.rpcUrl !== second ? [this.opts.rpcUrl, second] : [this.opts.rpcUrl];
+    let last: unknown;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      let res: Response;
+      try {
+        res = await f(urls[attempt % urls.length]!, { method: "POST", headers: { "content-type": "application/json" }, body: payload, signal: AbortSignal.timeout(10_000) });
+        if (res.status === 429 || res.status >= 500) throw new Error(`rpc ${res.status}`);
+      } catch (e) {
+        last = e;
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        continue;
+      }
+      const body = (await res.json()) as { result?: { result?: number[] }; error?: unknown };
+      if (!body.result?.result) throw new Error(`view ${method} failed: ${JSON.stringify(body.error ?? body).slice(0, 300)}`);
+      return JSON.parse(Buffer.from(body.result.result).toString("utf8")) as T;
+    }
+    throw new Error(`view ${method} failed: ${(last as Error)?.message ?? "no answer"}`);
   }
 
   /** Which NFT holds this script, cached for 10 minutes (mints are rare). */
@@ -113,6 +130,56 @@ export class NftPublisher {
     return res.transaction?.hash ?? res.transaction_outcome?.id ?? "unknown";
   }
 
+  /** The holder now: who receives the author's share of fees. */
+  revenueReceiver(tokenId: string) {
+    return this.view<string | null>("revenue_receiver", { token_id: tokenId });
+  }
+
+  /** The holder's copy fee in effect now, in basis points of profit (default 500 = 5%). */
+  async copyFeeBps(tokenId: string): Promise<number> {
+    const [now] = await this.view<[number, number, number]>("copy_fee", { token_id: tokenId });
+    return Number(now);
+  }
+
+  /** (bond held, bond required) in USD; copying is open while held >= required. */
+  async bondStatus(tokenId: string): Promise<{ held_usd: number; required_usd: number }> {
+    const [held, required] = await this.view<[string, string]>("bond_status", { token_id: tokenId });
+    return { held_usd: Number(held) / 1e6, required_usd: Number(required) / 1e6 };
+  }
+
+  /** Atomic amount the contract credited for a fee payment reference, or null if not recorded. */
+  async feePayment(reference: string): Promise<string | null> {
+    return this.view<string | null>("fee_payment", { reference });
+  }
+
+  /**
+   * Names the payer of a fee an Agent API agent withdrew to the contract (recorder only). The contract
+   * credits at most what it holds and does not owe, once per reference (0 if a withdrawal settled
+   * meanwhile: try again).
+   */
+  async recordFeePayment(a: { payer: string; tokenId: string; feeToken: string; amount: string; reference: string }): Promise<string> {
+    const res = (await this.acct().callFunctionRaw({
+      contractId: this.opts.contract!,
+      methodName: "record_fee_payment",
+      args: { payer: a.payer, token_id: a.tokenId, fee_token: a.feeToken, amount: a.amount, reference: a.reference },
+      deposit: 0n,
+      gas: 60n * TGAS,
+    })) as { transaction?: { hash?: string }; transaction_outcome?: { id?: string } };
+    return res.transaction?.hash ?? res.transaction_outcome?.id ?? "unknown";
+  }
+
+  /** Reports the copiers' capital (USD) that sets the holder's required bond. Recorder only. */
+  async setCopiedCapital(tokenId: string, usd: number): Promise<string> {
+    const res = (await this.acct().callFunctionRaw({
+      contractId: this.opts.contract!,
+      methodName: "set_copied_capital",
+      args: { token_id: tokenId, usd: String(Math.max(0, Math.round(usd * 1e6))) },
+      deposit: 0n,
+      gas: 30n * TGAS,
+    })) as { transaction?: { hash?: string }; transaction_outcome?: { id?: string } };
+    return res.transaction?.hash ?? res.transaction_outcome?.id ?? "unknown";
+  }
+
   async history(tokenId: string) {
     const [strategy, record] = await Promise.all([this.view<StrategyInfo | null>("strategy_info", { token_id: tokenId }), this.record(tokenId)]);
     return { token_id: tokenId, strategy, record };
@@ -123,14 +190,14 @@ export class NftPublisher {
  * Appends the checkpoint of the last finished period to every NFT whose script ran in it.
  * Idempotent: a period already on chain (or already tried locally) is skipped.
  */
-export async function publishCheckpoints(db: Db, nft: NftPublisher, now = Date.now()) {
+export async function publishCheckpoints(db: Db, nft: NftPublisher, now = Date.now(), opts: { reportCapital?: boolean } = {}) {
   if (!nft.configured) return [];
   const periodEnd = Math.floor(now / PERIOD_MS) * PERIOD_MS;
   const periodStart = periodEnd - PERIOD_MS;
   const runs = await db
     .prepare(
       `SELECT r.pilot_id, r.wasm_sha256, r.output_sha256, p.strategy_id FROM runs r JOIN pilots p ON p.id = r.pilot_id
-       WHERE r.status = 'ok' AND r.wasm_sha256 IS NOT NULL AND r.started_at >= ? AND r.started_at < ? ORDER BY r.started_at`,
+       WHERE r.status = 'ok' AND r.wasm_sha256 IS NOT NULL AND r.started_at >= ? AND r.started_at < ? AND p.swarm_json IS NULL ORDER BY r.started_at`,
     )
     .all<{ pilot_id: string; wasm_sha256: string; output_sha256: string | null; strategy_id: string }>(periodStart, periodEnd);
 
@@ -185,6 +252,13 @@ export async function publishCheckpoints(db: Db, nft: NftPublisher, now = Date.n
         followers: g.pilots.size,
       };
       const tx = await nft.appendCheckpoint(tokenId, checkpoint);
+      // The holder's required bond follows copiers' capital: report it (an extra write, off by default).
+      if (opts.reportCapital) {
+        const strategyId = runs.find((r) => scriptCodeHash(r.wasm_sha256, r.strategy_id) === codeHash)!.strategy_id;
+        const holder = await nft.revenueReceiver(tokenId).catch(() => null);
+        const capital = await copiedCapitalUsd(db, strategyId, holder);
+        await nft.setCopiedCapital(tokenId, capital).catch((e: Error) => logEvent(db, null, "warn", `NFT ${tokenId}: copied capital not reported: ${e.message}`));
+      }
       await db.prepare("INSERT OR REPLACE INTO nft_checkpoints (code_hash, period_end_ms, token_id, tx) VALUES (?, ?, ?, ?)").run(codeHash, periodEnd, tokenId, tx);
       await db.prepare(
         `UPDATE runs SET nft_status = 'published', nft_tx = ? WHERE status = 'ok' AND started_at >= ? AND started_at < ? AND pilot_id IN (${ids.map(() => "?").join(",")})`,

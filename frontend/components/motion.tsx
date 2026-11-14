@@ -3,7 +3,11 @@ import { motion, type HTMLMotionProps } from "framer-motion";
 
 export const ease = [0.16, 1, 0.3, 1] as const;
 
-/** Slides a line up from behind a mask. Padded on all sides so descenders and overhangs (j, g, y) are never clipped. */
+/**
+ * Slides a line up from behind a mask. Padded on all sides so descenders and overhangs (j, g, y) are never clipped.
+ * One visual line only: wrapped text never reveals (the hidden part no longer touches the mask, so it is never
+ * "in view"). For a headline that must break on phones, use one Line per row.
+ */
 export function Line({ children, delay = 0, className = "" }: { children: React.ReactNode; delay?: number; className?: string }) {
   return (
     <span className={`-mx-[0.12em] -mb-[0.14em] block overflow-hidden whitespace-nowrap px-[0.12em] pb-[0.14em] ${className}`}>

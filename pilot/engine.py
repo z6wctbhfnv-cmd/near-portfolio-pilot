@@ -21,7 +21,9 @@ HOURS_PER_YEAR = 8760
 class Costs:
     fee: float = 0.002  # 1Click's share with a partner key (20 bps)
     spread: float = 0.0005  # solver spread assumption
-    pilot_spot_fee: float = 0.001  # Pilot's app fee on spot swaps (1Click appFees; 1Click keeps its 20 bps)
+    # Pilot's app fee on spot swaps. NOT collectable through the Agent API (its swap has no app-fee
+    # field, see docs/REVENUE.md); kept as a cost so the simulation stays conservative.
+    pilot_spot_fee: float = 0.001
     perp_fee: float = 0.00045  # Hyperliquid base taker fee
     perp_spread: float = 0.0002  # half-spread + slippage on liquid perp books
     pilot_perp_fee: float = 0.0005  # Pilot's Hyperliquid builder code fee on perps
